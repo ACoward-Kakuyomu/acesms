@@ -6,6 +6,10 @@ acesms（ACoward's Emulator Sega Master System）は Windows 11 x64 向けの Se
 
 [Releases](https://github.com/ACoward-Kakuyomu/acesms/releases) から Windows x64 版を入手し、書込み可能なフォルダにZIP全体を展開して `acesms.exe` を起動してください。操作、設定、セーブデータのバックアップ方法は[マニュアル](docs/PACKAGE.md)に記載しています。
 
+### 公開版の更新
+
+公開版1.0.0を互換性の基準とし、新しい公開版に更新するときは設定・SRAM・ステート・チート定義を引き継ぐ方針です。更新前に旧版を正常終了し、`acesms.sqlite3` をバックアップしてください。新しいZIPは別のフォルダに展開し、DBのコピーを新しい実行ファイルの横に置きます。旧版に戻す場合は、更新前の実行ファイルとDBのバックアップを使います。
+
 ### ソースからビルド
 
 Visual Studio 2026 の「C++ によるデスクトップ開発」と C++ ATL、Windows SDK、CMake 4.2 以降を使います。依存ライブラリは `third_party` に収録しています。
@@ -27,6 +31,10 @@ acesmsのライセンスは [MIT](LICENSE) です。第三者ライブラリの�
 acesms (ACoward's Emulator Sega Master System) is a Sega Master System, Game Gear, and SG-1000 emulator for Windows 11 x64.
 
 Download the Windows x64 package from [Releases](https://github.com/ACoward-Kakuyomu/acesms/releases), extract the entire ZIP to a writable folder, and run `acesms.exe`. See the [manual](docs/PACKAGE.md#english) for controls, settings, and save-data backups.
+
+### Upgrading a public release
+
+Version 1.0.0 is the compatibility baseline. Upgrades are designed to preserve settings, SRAM, save states, and cheat definitions from public releases. Before upgrading, close the old version normally and back up `acesms.sqlite3`. Extract the new ZIP into a separate folder and place a copy of the database next to the new executable. To roll back, use the old executable and your pre-upgrade database backup.
 
 ### Build from source
 
