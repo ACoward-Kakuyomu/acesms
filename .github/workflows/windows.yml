@@ -1,0 +1,65 @@
+name: Windows x64
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 18 2026" -A x64
+      - name: Build Release
+        run: cmake --build build --config Release
+      - name: Test and verify package
+        # Window and presenter tests require an interactive Windows desktop.
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error -E '^(window_|presenter_)'
+      - name: Select package for tag
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        id: package
+        run: |
+          if ($env:GITHUB_REF_NAME -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+            throw 'Expected a release tag in the form vX.Y.Z.'
+          }
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $package = "build/packages/Release/acesms-$version-win64.zip"
+          if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
+            throw "Tag $env:GITHUB_REF_NAME does not match the verified CMake release package."
+          }
+          "path=$package" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v7
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        with:
+          name: release-zip
+          path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: windows-2025-vs2026
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-zip
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          gh release create $env:GITHUB_REF_NAME "acesms-$version-win64.zip" --repo $env:GITHUB_REPOSITORY --verify-tag --title "acesms $version" --notes-file "docs/releases/$version.md"

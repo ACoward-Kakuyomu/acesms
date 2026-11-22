@@ -1,0 +1,15 @@
+# Preserve the fixed upstream bytes across Windows checkouts.
+third_party/emu2413/emu2413.c -text
+third_party/emu2413/emu2413.h -text
+third_party/emu2413/LICENSE -text
+third_party/ymfm/src/* -text
+third_party/ymfm/LICENSE -text
+third_party/ymfm/UPSTREAM-README.md -text whitespace=-blank-at-eof
+third_party/ymfm/UPSTREAM-SHA256SUMS.txt text eol=lf
+third_party/sqlite/sqlite3.c -text whitespace=-blank-at-eol
+third_party/sqlite/sqlite3.h -text
+third_party/miniz/miniz.c -text whitespace=-blank-at-eol,-blank-at-eof
+third_party/miniz/miniz.h -text whitespace=-blank-at-eol,-blank-at-eof
+third_party/miniz/LICENSE -text whitespace=-blank-at-eol,-blank-at-eof
+third_party/picojson/picojson.h -text
+third_party/picojson/LICENSE -text
