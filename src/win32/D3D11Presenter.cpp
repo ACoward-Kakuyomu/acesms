@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 
@@ -13,6 +14,7 @@ namespace {
 constexpr unsigned fpsPadding = 4, fpsMargin = 8, fpsAdvance = 12, fpsHeight = 2 * fpsPadding + 14;
 // "FPS " plus up to 20 integral digits, a point and one decimal digit.
 constexpr unsigned fpsTextureWidth = 26 * fpsAdvance + 2 * fpsPadding;
+constexpr unsigned slotTextureWidth=640, slotHeight=24, slotPadding=6;
 constexpr std::string_view fpsCharacters = "0123456789.FPS ";
 constexpr uint8_t fpsGlyphs[][7]{
     {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14}, {14,17,1,2,4,8,31},
@@ -172,6 +174,65 @@ void D3D11Presenter::setFpsText(std::string_view text) {
     fpsWidth_ = nextWidth;
 }
 
+void D3D11Presenter::setSlotNotice(std::wstring_view text) {
+    if(slotNotice_==text) return;
+    slotNotice_=text;
+    slotAvailableWidth_=0;
+}
+
+void D3D11Presenter::uploadSlotNotice(unsigned availableWidth) {
+    if(!slotTexture_) {
+        D3D11_TEXTURE2D_DESC texture{};
+        texture.Width=slotTextureWidth;
+        texture.Height=slotHeight;
+        texture.MipLevels=texture.ArraySize=1;
+        texture.Format=DXGI_FORMAT_B8G8R8A8_UNORM;
+        texture.SampleDesc.Count=1;
+        texture.Usage=D3D11_USAGE_DYNAMIC;
+        texture.BindFlags=D3D11_BIND_SHADER_RESOURCE;
+        texture.CPUAccessFlags=D3D11_CPU_ACCESS_WRITE;
+        check(device_->CreateTexture2D(&texture,nullptr,&slotTexture_),"Create slot notice texture");
+        check(device_->CreateShaderResourceView(slotTexture_.Get(),nullptr,&slotView_),"Create slot notice view");
+    }
+    BITMAPINFO info{};
+    info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth=slotTextureWidth;
+    info.bmiHeader.biHeight=-static_cast<LONG>(slotHeight);
+    info.bmiHeader.biPlanes=1;
+    info.bmiHeader.biBitCount=32;
+    void* pixels=nullptr;
+    std::unique_ptr<std::remove_pointer_t<HBITMAP>,decltype(&DeleteObject)> bitmap(
+        CreateDIBSection(nullptr,&info,DIB_RGB_COLORS,&pixels,nullptr,0),DeleteObject);
+    std::unique_ptr<std::remove_pointer_t<HDC>,decltype(&DeleteDC)> dc(CreateCompatibleDC(nullptr),DeleteDC);
+    if(!bitmap || !dc || !SelectObject(dc.get(),bitmap.get()))
+        throw std::runtime_error("Create slot notice bitmap failed");
+    SelectObject(dc.get(),GetStockObject(DEFAULT_GUI_FONT));
+    constexpr unsigned style=DT_SINGLELINE|DT_NOPREFIX;
+    RECT measured{};
+    const auto length=static_cast<int>(slotNotice_.size());
+    if(!DrawTextW(dc.get(),slotNotice_.c_str(),length,&measured,style|DT_CALCRECT))
+        throw std::runtime_error("Measure slot notice failed");
+    const auto width=std::min(availableWidth,static_cast<unsigned>(measured.right)+2*slotPadding);
+    std::memset(pixels,0,slotTextureWidth*slotHeight*4);
+    SetBkMode(dc.get(),TRANSPARENT);
+    SetTextColor(dc.get(),RGB(255,255,255));
+    RECT label{slotPadding,0,static_cast<LONG>(width-slotPadding),slotHeight};
+    if(!DrawTextW(dc.get(),slotNotice_.c_str(),length,&label,style|DT_VCENTER|DT_END_ELLIPSIS))
+        throw std::runtime_error("Draw slot notice failed");
+    GdiFlush();
+    auto* colors=static_cast<uint32_t*>(pixels);
+    for(unsigned y=0;y<slotHeight;++y)
+        for(unsigned x=0;x<width;++x) colors[y*slotTextureWidth+x]|=0xff000000;
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    check(context_->Map(slotTexture_.Get(),0,D3D11_MAP_WRITE_DISCARD,0,&mapped),"Map slot notice texture");
+    for(unsigned y=0;y<slotHeight;++y)
+        std::memcpy(static_cast<uint8_t*>(mapped.pData)+y*mapped.RowPitch,
+            static_cast<const uint8_t*>(pixels)+y*slotTextureWidth*4,width*4);
+    context_->Unmap(slotTexture_.Get(),0);
+    slotWidth_=width;
+    slotAvailableWidth_=availableWidth;
+}
+
 void D3D11Presenter::draw() {
     if (width_ == 0 || height_ == 0) return;
     context_->OMSetRenderTargets(1, target_.GetAddressOf(), nullptr);
@@ -195,9 +256,16 @@ void D3D11Presenter::draw() {
         context_->Draw(3, 0);
     };
     drawTexture(area_, area, view_.Get());
-    if (fpsWidth_ && area.width >= fpsWidth_ + 2 * fpsMargin && area.height >= fpsHeight + 2 * fpsMargin) {
+    const bool drawFps=fpsWidth_ && area.width>=fpsWidth_+2*fpsMargin && area.height>=fpsHeight+2*fpsMargin;
+    if (drawFps) {
         drawTexture({0,0,fpsWidth_,fpsHeight},
             {area.x + area.width - fpsMargin - fpsWidth_, area.y + fpsMargin, fpsWidth_, fpsHeight}, fpsView_.Get());
+    }
+    const auto reserved=2*fpsMargin+(drawFps?fpsWidth_+fpsMargin:0);
+    if(!slotNotice_.empty() && area.width>reserved+2*slotPadding && area.height>=slotHeight+2*fpsMargin) {
+        const auto available=std::min(slotTextureWidth,area.width-reserved);
+        if(slotAvailableWidth_!=available) uploadSlotNotice(available);
+        drawTexture({0,0,slotWidth_,slotHeight},{area.x+fpsMargin,area.y+fpsMargin,slotWidth_,slotHeight},slotView_.Get());
     }
 }
 

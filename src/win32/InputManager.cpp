@@ -14,6 +14,25 @@ const std::array<XInputButtonChoice,8> xinputButtons{{
     {XINPUT_GAMEPAD_LEFT_SHOULDER,L"Left shoulder"},{XINPUT_GAMEPAD_RIGHT_SHOULDER,L"Right shoulder"},
     {XINPUT_GAMEPAD_LEFT_THUMB,L"Left stick press"},{XINPUT_GAMEPAD_RIGHT_THUMB,L"Right stick press"}
 }};
+const std::array<XInputButtonChoice,11> shortcutButtons{{
+    xinputButtons[0],xinputButtons[1],xinputButtons[2],xinputButtons[3],
+    xinputButtons[4],xinputButtons[5],xinputButtons[6],xinputButtons[7],
+    {leftTriggerButton,L"Left trigger"},{rightTriggerButton,L"Right trigger"},{0,L"(Unassigned)"}
+}};
+const std::array<const wchar_t*,6> shortcutNames{
+    L"Save state",L"Load state",L"Previous slot",L"Next slot",L"Fast forward",L"Fullscreen"};
+
+const wchar_t* validateShortcuts(const ShortcutBindings& shortcuts,const PadConfiguration& pad) {
+    unsigned used=0;
+    for(size_t i=0;i<shortcuts.size();++i) {
+        const auto button=shortcuts[i];
+        if(std::ranges::find(shortcutButtons,button,&XInputButtonChoice::mask)==shortcutButtons.end() ||
+            (used&button) || (button && pad.source==PadSource::XInput &&
+                std::ranges::find(pad.buttons,button)!=pad.buttons.end())) return shortcutNames[i];
+        used|=button;
+    }
+    return nullptr;
+}
 
 ControllerConfiguration defaultControllerConfiguration() {
     return {PadConfiguration{.source=PadSource::Keyboard,.keys={VK_UP,VK_DOWN,VK_LEFT,VK_RIGHT,'Z','X','A','S'}},
@@ -80,12 +99,14 @@ void InputManager::clear() {
     blocked_.fill(true);
 }
 
-void InputManager::configure(const ControllerConfiguration& configuration) {
+void InputManager::configure(const ControllerConfiguration& configuration,const ShortcutBindings& shortcuts) {
     configuration_=configuration;
+    shortcuts_=shortcuts;
     clear();
 }
 
 InputAction InputManager::updateGamepad(unsigned player, GamepadState state, bool active) {
+    if(player!=0) state.buttons&=~(leftTriggerButton|rightTriggerButton);
     auto& current=gamepads_[player];
     auto& blocked=blocked_[player];
     if(!active || !state.connected) {
@@ -102,6 +123,17 @@ InputAction InputManager::updateGamepad(unsigned player, GamepadState state, boo
     if(player==0) {
         if(pressed & XINPUT_GAMEPAD_BACK) return InputAction::TogglePause;
         if(pressed & XINPUT_GAMEPAD_START) return InputAction::ConsolePause;
+        if(configuration_[0].source==PadSource::XInput) {
+            constexpr std::array actions{InputAction::SaveState,InputAction::LoadState,InputAction::PreviousSlot,
+                InputAction::NextSlot,InputAction::ToggleFastForward,InputAction::ToggleFullscreen};
+            InputAction action=InputAction::None;
+            for(size_t i=0;i<shortcuts_.size();++i) {
+                if(!(pressed&shortcuts_[i])) continue;
+                if(action!=InputAction::None) return InputAction::None;
+                action=actions[i];
+            }
+            return action;
+        }
     }
     return InputAction::None;
 }

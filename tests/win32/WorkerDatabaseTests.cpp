@@ -41,10 +41,10 @@ std::vector<uint8_t> sram(const std::filesystem::path& path) {
     std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> owner(s,sqlite3_finalize);require(sqlite3_step(s)==SQLITE_ROW,"SRAM row");
     const auto* p=static_cast<const uint8_t*>(sqlite3_column_blob(s,0));return {p,p+sqlite3_column_bytes(s,0)};
 }
-LoadRequest fixture(const std::filesystem::path& dir,bool fm=false) {
+LoadRequest fixture(const std::filesystem::path& dir,bool fm=false,size_t romBytes=32768) {
     LoadRequest request;request.path=dir/L"cart.sms";request.databasePath=dir/L"roms.sqlite3";
     std::filesystem::remove(request.databasePath);auto sav=request.path;sav.replace_extension(L".sav");std::filesystem::remove(sav);
-    auto bytes=test::stage5InputRom();bytes.resize(32768);bytes[1]=0;bytes[2]=8;
+    auto bytes=test::stage5InputRom();bytes.resize(romBytes);bytes[1]=0;bytes[2]=8;
     const uint8_t code[]{0x3e,8,0x32,0xfc,0xff,0x3e,0x5a,0x32,0,0xa0,0xc3,0,1};std::copy(std::begin(code),std::end(code),bytes.begin()+0x800);
     {std::ofstream f(request.path,std::ios::binary);f.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());require(bool(f),"ROM write");}
     auto image=std::get<RomImage>(RomLoader::fromBytes(std::move(bytes),{MapperKind::Sega,8192}));
@@ -639,8 +639,8 @@ void sg1000(const std::filesystem::path& dir) {
     }
 }
 
-void zipRom(const std::filesystem::path& dir) {
-    auto request=fixture(dir);
+void zipRom(const std::filesystem::path& dir, size_t romBytes=32768) {
+    auto request=fixture(dir,false,romBytes);
     const auto payload=fileBytes(request.path);
     auto alternate=payload;
     alternate.back()^=1;
@@ -664,7 +664,7 @@ void zipRom(const std::filesystem::path& dir) {
 
     auto opened=RomDatabase::open(request.databasePath);
     auto& db=std::get<RomDatabase>(opened);
-    const StateProfile profile{32768,record.identity.crc32,Machine::Sms,VideoStandard::Ntsc,MapperKind::Sega,8192,48000,{}};
+    const StateProfile profile{record.identity.bytes,record.identity.crc32,Machine::Sms,VideoStandard::Ntsc,MapperKind::Sega,8192,48000,{}};
     const auto captureRam=[&](uint8_t expected) {
         require(runner.saveDatabaseState(L"probe"),"capture ZIP session");
         s=done(runner,s->operationSerial);
@@ -677,6 +677,28 @@ void zipRom(const std::filesystem::path& dir) {
     s=done(runner,s->operationSerial);
     require(s->operationSucceeded,"raw ROM state rejected in ZIP session");
     captureRam(0x44);
+
+    if (romBytes == 768 * 1024) {
+        auto update = change(*s);
+        update.preview = true;
+        require(runner.updateRom(update),"768 KiB settings preview submit");
+        s = done(runner,s->operationSerial);
+        require(s->operationSucceeded && s->romUpdateImpact && s->romUpdateImpact->states.size()==3 &&
+            std::ranges::all_of(s->romUpdateImpact->states,[](const StateImpact& impact) {
+                return impact.disposition==StateDisposition::Convert;
+            }),
+            "768 KiB state profiles rejected during settings preview");
+        const auto padded = dir/"padded.zip";
+        auto paddedPayload = payload;
+        paddedPayload.resize(1024 * 1024);
+        test::writeZip(padded,{{"padded.sms",paddedPayload}});
+        request.path = padded;
+        require(runner.load(request),"padded ROM lookup");
+        s = done(runner,s->operationSerial);
+        require(s->unregisteredRom && s->unregisteredRom->identity.bytes==paddedPayload.size() &&
+            s->unregisteredRom->identity.sha256!=record.identity.sha256 && s->databaseRecord==record,
+            "padded ROM reused 768 KiB identity");
+    }
 
     auto fail=[&](const std::filesystem::path& path,std::string_view reason) {
         request.path=path;
@@ -772,6 +794,7 @@ int main(int argc,char** argv) {
         else if(op=="database_path") databasePath(dir);
         else if(op=="sg1000") sg1000(dir);
         else if(op=="zip") zipRom(dir);
+        else if(op=="zip_768k") zipRom(dir,768 * 1024);
         else if(op=="cheats") cheats(dir);
         else if(op=="load") loading(dir);else if(op=="ack") {ack(dir);commitResponsiveness(dir/"commit");}else if(op=="failures") failures(dir);else if(op=="stop") stop(dir);else if(op=="metadata") metadata(dir);else if(op=="fm") fm(dir);else if(op=="running") running(dir);else require(false,"operation");return 0;
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

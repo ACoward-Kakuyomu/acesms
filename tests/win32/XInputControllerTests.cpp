@@ -34,7 +34,12 @@ bool mapping() {
     raw.bLeftTrigger = raw.bRightTrigger = 255;
     raw.sThumbRX = raw.sThumbRY = 32767;
     const auto unused = controller.poll(0);
-    return unused.connected && !mask(unused.pad) && unused.buttons==raw.wButtons;
+    using smsgg::win32::leftTriggerButton;
+    using smsgg::win32::rightTriggerButton;
+    if(!unused.connected || mask(unused.pad) || unused.buttons!=(raw.wButtons|leftTriggerButton|rightTriggerButton)) return false;
+    raw.bLeftTrigger=XINPUT_GAMEPAD_TRIGGER_THRESHOLD;
+    raw.bRightTrigger=XINPUT_GAMEPAD_TRIGGER_THRESHOLD+1;
+    return controller.poll(0).buttons==(raw.wButtons|rightTriggerButton);
 }
 bool sticks() {
     api::reset();

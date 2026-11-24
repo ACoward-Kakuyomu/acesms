@@ -23,10 +23,10 @@ static_assert(std::is_same_v<decltype(std::declval<RomImage&>().metadata()), con
 namespace {
 bool sizes() {
     constexpr std::array<size_t, 4> romOnly{8192, 16384, 32768, 49152};
-    constexpr std::array<size_t, 8> sega{8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576};
+    constexpr std::array<size_t, 9> sega{8192, 16384, 32768, 65536, 131072, 262144, 524288, 768 * 1024, 1048576};
     for (const auto mapper : {MapperKind::RomOnly, MapperKind::Sega}) {
         std::vector<size_t> sizes{0, 1, 511, 512, 4096, 12288, 24576, 98304, 1048577, 2097152};
-        for (const auto size : {8192, 16384, 32768, 49152, 65536, 131072, 262144, 524288, 1048576}) {
+        for (const auto size : {8192, 16384, 32768, 49152, 65536, 131072, 262144, 524288, 768 * 1024, 1048576}) {
             sizes.insert(sizes.end(), {size - 1u, static_cast<size_t>(size), size + 1u});
         }
         for (const auto size : sizes) {
@@ -47,6 +47,19 @@ bool sizes() {
                 }
             }
         }
+    }
+    const auto automatic = RomLoader::fromBytes(std::vector<uint8_t>(768 * 1024), {MapperKind::Auto});
+    const auto* image = std::get_if<RomImage>(&automatic);
+    if (!image || image->options().mapper != MapperKind::Sega ||
+        image->metadata().mapperSelection != smsgg::MapperSelection::DefaultSega) return false;
+    for (const auto options : {
+        LoadOptions{MapperKind::Sega, 0, smsgg::CopierHeader::None, smsgg::Machine::GameGear},
+        LoadOptions{MapperKind::Auto, 0, smsgg::CopierHeader::None, smsgg::Machine::GameGear},
+        LoadOptions{MapperKind::RomOnly, 0, smsgg::CopierHeader::None, smsgg::Machine::Sg1000},
+        LoadOptions{MapperKind::Codemasters}}) {
+        const auto result = RomLoader::fromBytes(std::vector<uint8_t>(768 * 1024), options);
+        const auto* error = std::get_if<RomLoadError>(&result);
+        if (!error || *error != RomLoadError::UnsupportedRomSize) return false;
     }
     return true;
 }
@@ -71,7 +84,7 @@ bool options() {
 
 bool prefix() {
     for (const auto mapper : {MapperKind::RomOnly, MapperKind::Sega}) {
-        for (const size_t size : {8192, 16384, 32768, 49152, 65536, 131072, 262144, 524288, 1048576}) {
+        for (const size_t size : {8192, 16384, 32768, 49152, 65536, 131072, 262144, 524288, 768 * 1024, 1048576}) {
             const bool supported = mapper == MapperKind::Sega ? size != 49152 : size <= 49152;
             std::vector<uint8_t> raw(size + 512, 0xa5);
             for (size_t i = 0; i < size; ++i) raw[i + 512] = static_cast<uint8_t>(i ^ (i / 256));
@@ -220,7 +233,7 @@ bool file(const std::filesystem::path& folder) {
     std::filesystem::create_directories(folder, error);
     if (error) return false;
     const auto path = folder / std::filesystem::path(L"loader-\u30ed\u30fc\u30c9.sms");
-    for (const size_t size : {8192, 32768, 49152, 1048576}) {
+    for (const size_t size : {8192, 32768, 49152, 768 * 1024, 1048576}) {
         for (const size_t prefix : {0, 512}) {
             const LoadOptions options{size == 49152 ? MapperKind::RomOnly : MapperKind::Sega,
                 size == 49152 ? 0u : 32768u, prefix == 0 ? smsgg::CopierHeader::None : smsgg::CopierHeader::Strip512};

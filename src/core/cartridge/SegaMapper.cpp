@@ -11,8 +11,10 @@ uint8_t SegaMapper::read8(uint16_t address) {
         const size_t index = ((control_ & 4) != 0 ? 0x4000 : 0) + address - 0x8000;
         return sram_[index & (sram_.size() - 1)];
     }
-    const size_t index = banks_[address >> 14] * 0x4000 + (address & 0x3fff);
-    return rom_[index & (rom_.size() - 1)];
+    const auto bank = banks_[address >> 14];
+    const auto offset = address & 0x3fff;
+    if (rom_.size() == segaRomSize768KiB) return rom_[(bank % 48) * 0x4000 + offset];
+    return rom_[(bank * 0x4000 + offset) & (rom_.size() - 1)];
 }
 
 void SegaMapper::write8(uint16_t address, uint8_t value) {

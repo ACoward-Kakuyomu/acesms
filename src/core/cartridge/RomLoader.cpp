@@ -25,8 +25,8 @@ std::optional<RomLoadError> validate(uintmax_t rawSize, LoadOptions options) {
     if (prefix != 0 && rawSize <= prefix) return RomLoadError::InvalidCopierHeader;
     const auto size = rawSize - prefix;
     const bool supported = romOnly ? supportsLinearRomSize(size, options.machine)
-        : (automatic && size == 49152)
-            || (size >= (codemasters ? 32768u : 8192u) && size <= 1048576 && std::has_single_bit(size));
+        : codemasters ? size >= 32768 && size <= 1048576 && std::has_single_bit(size)
+        : (automatic && size == 49152) || supportsSegaRomSize(size, options.machine);
     if (!supported) return RomLoadError::UnsupportedRomSize;
     return std::nullopt;
 }

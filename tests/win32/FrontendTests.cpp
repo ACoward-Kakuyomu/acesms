@@ -121,7 +121,27 @@ bool gamepadEdges() {
     state.buttons=0;input.updateGamepad(0,state,true);
     state.buttons=XINPUT_GAMEPAD_START;
     if(input.updateGamepad(0,state,true)!=InputAction::ConsolePause || !input.pad().start) return false;
-    return input.updateGamepad(0,{},true)==InputAction::None && !input.pad().start;
+    if(input.updateGamepad(0,{},true)!=InputAction::None || input.pad().start) return false;
+    constexpr std::array actions{InputAction::SaveState,InputAction::LoadState,InputAction::PreviousSlot,
+        InputAction::NextSlot,InputAction::ToggleFastForward,InputAction::ToggleFullscreen};
+    for(size_t i=0;i<actions.size();++i) {
+        input.updateGamepad(0,{{},0,true},true);
+        const GamepadState pressed{{},defaultShortcuts[i],true};
+        if(input.updateGamepad(0,pressed,true)!=actions[i] ||
+            input.updateGamepad(0,pressed,true)!=InputAction::None ||
+            input.updateGamepad(1,pressed,true)!=InputAction::None) return false;
+    }
+    input.updateGamepad(0,{},true);
+    if(input.updateGamepad(0,{{},leftTriggerButton,true},true)!=InputAction::None) return false;
+    input.updateGamepad(0,{{},0,true},true);
+    if(input.updateGamepad(0,{{},leftTriggerButton|rightTriggerButton,true},true)!=InputAction::None) return false;
+    auto custom=defaultShortcuts;
+    custom[0]=0;
+    custom[1]=XINPUT_GAMEPAD_LEFT_SHOULDER;
+    input.configure(config,custom);
+    input.updateGamepad(0,{{},0,true},true);
+    if(input.updateGamepad(0,{{},XINPUT_GAMEPAD_LEFT_SHOULDER,true},true)!=InputAction::LoadState) return false;
+    return validateShortcuts(custom,config[0])==nullptr;
 }
 bool ggStart() {
     using namespace smsgg::win32;

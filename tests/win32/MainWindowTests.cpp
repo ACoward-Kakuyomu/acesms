@@ -64,6 +64,8 @@ struct MainWindowTestAccess {
     static PadState pad(MainWindow& w,unsigned player=0) { return w.input_.pad(player); }
     static unsigned rapid(MainWindow& w,unsigned player) {return w.input_.rapidButtons(player);}
     static const auto& fpsText(const MainWindow& w) { return PresenterTestAccess::fpsText(*w.presenter_); }
+    static const auto& slotNotice(const MainWindow& w) { return PresenterTestAccess::slotNotice(*w.presenter_); }
+    static void expireSlotNotice(MainWindow& w) { w.slotNoticeUntil_=std::chrono::steady_clock::now();pollGamepad(w); }
     static void cycleWindowScale(MainWindow& w,const RECT& workArea) { w.cycleWindowScale(workArea); }
     static void stateFile(MainWindow& w,const std::filesystem::path& path,bool save) {w.requestState(path,save);}
     static const auto& defaults(const MainWindow& w) { return w.romDefaults_; }
@@ -242,6 +244,7 @@ smsgg::win32::RomDatabase* changeStatesOnReview{};
 bool changedStatesOnReview{};
 std::filesystem::path removeOnRetry;
 std::function<void(HWND)> settingsAction;
+std::function<void(HWND)> shortcutsAction;
 bool closeSettingsOnError{};
 std::wstring settingsErrorText;
 int cheatCloseChoice=IDCANCEL;
@@ -264,6 +267,8 @@ LRESULT CALLBACK dismissDialog(int code, WPARAM value, LPARAM data) {
             wchar_t caption[128]{};GetWindowTextW(window,caption,128);
             if(std::wstring_view(caption)==L"Settings") {
                 if(auto action=std::exchange(settingsAction,{})) action(window);
+            } else if(std::wstring_view(caption)==L"Player 1 XInput Shortcuts") {
+                if(auto action=std::exchange(shortcutsAction,{})) action(window);
             } else if(closeSettingsOnError && owner!=dialogOwner) {
                 settingsErrorText=lastDialogText;
                 PostMessageW(window,WM_CLOSE,0,0);
@@ -915,6 +920,13 @@ bool controllerSettings(const std::filesystem::path& root) {
             return;
         }
         api::results[0]=api::results[2]=ERROR_SUCCESS;
+        BYTE originalKeys[256]{}, simulatedKeys[256]{};
+        simulatedKeys[VK_KANJI]=0x80;
+        if(!GetKeyboardState(originalKeys) || !SetKeyboardState(simulatedKeys)) {
+            correct=false;
+            PostMessageW(dialog,WM_COMMAND,IDCANCEL,0);
+            return;
+        }
         const auto keyField=GetDlgItem(dialog,IDC_PAD_KEY_BASE);
         SetFocus(keyField);
         SendMessageW(keyField,WM_KEYDOWN,VK_F5,0);
@@ -922,16 +934,27 @@ bool controllerSettings(const std::filesystem::path& root) {
         SendMessageW(keyField,WM_KEYDOWN,VK_ESCAPE,0);
         correct=correct && GetFocus()==GetDlgItem(dialog,IDC_PAD_SOURCE);
         SetFocus(keyField);
+        simulatedKeys[VK_SHIFT]=0x80;
+        correct=SetKeyboardState(simulatedKeys) && correct;
+        SendMessageW(keyField,WM_KEYDOWN,'U',0);
+        const bool ignoredChord=GetFocus()==keyField;
+        simulatedKeys[VK_SHIFT]=0;
+        correct=SetKeyboardState(simulatedKeys) && correct;
         constexpr unsigned bindings[]{'U','D','L','R','F','G'};
         for(size_t i=0;i<std::size(bindings);++i) {
             const auto field=GetDlgItem(dialog,IDC_PAD_KEY_BASE+i);
             correct=correct && GetFocus()==field;
             SendMessageW(field,WM_KEYDOWN,bindings[i],0);
+            if(i==0 && (!ignoredChord || GetFocus()!=GetDlgItem(dialog,IDC_PAD_KEY_BASE+1))) {
+                std::cerr << "Shift must block assignment and VK_KANJI alone must allow it\n";
+                correct=false;
+            }
         }
         const auto rapidKey1=GetDlgItem(dialog,IDC_PAD_KEY_BASE+6);
         correct=correct && GetFocus()==rapidKey1;
         SendMessageW(rapidKey1,WM_KEYDOWN,'H',0);
         correct=correct && GetFocus()==GetDlgItem(dialog,IDC_PAD_KEY_BASE+7);
+        correct=SetKeyboardState(originalKeys) && correct;
         SendMessageW(dialog,WM_COMMAND,IDC_PAD_CLEAR_RAPID_BASE+1,0);
         correct=correct && text(dialog,IDC_PAD_KEY_BASE+7)==L"(Unassigned)";
         select(dialog,IDC_PAD_PLAYER,1);
@@ -965,6 +988,22 @@ bool controllerSettings(const std::filesystem::path& root) {
         SendMessageW(dialog,WM_COMMAND,IDOK,0);
         correct=correct && text(dialog,IDC_PAD_ERROR).find(L"different slot")!=std::wstring::npos
             ;
+        select(dialog,IDC_PAD_SLOT,0);
+        shortcutsAction=[&](HWND shortcuts) {
+            correct=correct && SendDlgItemMessageW(shortcuts,IDC_SHORTCUT_BASE,CB_GETCURSEL,0,0)==4 &&
+                SendDlgItemMessageW(shortcuts,IDC_SHORTCUT_BASE+2,CB_GETCURSEL,0,0)==8;
+            select(shortcuts,IDC_SHORTCUT_BASE,0); // A conflicts with Player 1 Button 1.
+            PostMessageW(shortcuts,WM_COMMAND,IDOK,0);
+        };
+        SendMessageW(dialog,WM_COMMAND,IDC_PAD_SHORTCUTS,0);
+        SendMessageW(dialog,WM_COMMAND,IDOK,0);
+        correct=correct && text(dialog,IDC_PAD_ERROR).find(L"Save state")!=std::wstring::npos;
+        shortcutsAction=[&](HWND shortcuts) {
+            select(shortcuts,IDC_SHORTCUT_BASE,10); // Unassigned.
+            select(shortcuts,IDC_SHORTCUT_BASE+1,4);
+            PostMessageW(shortcuts,WM_COMMAND,IDOK,0);
+        };
+        SendMessageW(dialog,WM_COMMAND,IDC_PAD_SHORTCUTS,0);
         select(dialog,IDC_PAD_SOURCE,0);
         PostMessageW(dialog,WM_COMMAND,IDOK,0);
     };
@@ -998,6 +1037,9 @@ bool controllerSettings(const std::filesystem::path& root) {
     w=makeWindow(dbPath);
     dialogOwner=w->handle();
     if(!configured()) throw std::runtime_error("Controller configuration did not survive restart");
+    auto opened=RomDatabase::open(dbPath);
+    const auto saved=std::get<AppSettings>(std::get<RomDatabase>(opened).readAppSettings());
+    if(saved.shortcuts[0]!=0 || saved.shortcuts[1]!=XINPUT_GAMEPAD_LEFT_SHOULDER) return false;
     return closeWindow(*w);
 }
 bool gg(const std::filesystem::path& root) {
@@ -1987,6 +2029,7 @@ bool dbStates(const std::filesystem::path& root) {
         return MainWindowTestAccess::snapshot(*w).operationSucceeded;
     };
     press(*w,'5');release(*w,'5');
+    if(MainWindowTestAccess::slotNotice(*w)!=L"Slot 5 \u2014 (Empty)") return false;
     if(!quick(VK_F5)) return false;
     const auto first=*MainWindowTestAccess::snapshot(*w).savedStateId;
     auto opened=RomDatabase::open(dbPath);
@@ -2005,10 +2048,50 @@ bool dbStates(const std::filesystem::path& root) {
     waitFor(*w,[](const auto& s){return s.state==RunnerState::Paused;});
     if(!quick(VK_F6) || MainWindowTestAccess::snapshot(*w).tstates!=0) return false;
     if(!quick(VK_F5) || rows().size()!=1 || rows()[0].id!=first || rows()[0].name!=L"same name") return false;
+    command(*w,IDM_STATE_SLOT_BASE+5);
+    command(*w,IDM_STATE_SLOT_BASE+4);
+    if(!MainWindowTestAccess::slotNotice(*w).starts_with(L"Slot 5 \u2014 ") ||
+        !MainWindowTestAccess::slotNotice(*w).ends_with(L" same name")) return false;
+    MainWindowTestAccess::expireSlotNotice(*w);
+    if(!MainWindowTestAccess::slotNotice(*w).empty()) return false;
     press(*w,'0');release(*w,'0');
     if(!quick(VK_F5) || rows().size()!=2 || rows()[1].slot!=10) return false;
     operate(IDC_STATE_DELETE,4,IDYES,true);
     if(rows().size()!=1 || rows()[0].slot!=10) return false;
+    MainWindowTestAccess::useGamepadInput(*w);
+    SendMessageW(w->handle(),WM_SETFOCUS,0,0);
+    namespace api=smsgg::test::xinput;
+    api::results[0]=ERROR_SUCCESS;
+    auto& pad=api::states[0].Gamepad;
+    const auto poll=[&] {MainWindowTestAccess::pollGamepad(*w);};
+    poll();
+    command(*w,IDM_STATE_SLOT_BASE);
+    pad.bLeftTrigger=255;poll();
+    if(!MainWindowTestAccess::slotNotice(*w).starts_with(L"Slot 10 \u2014 ")) return false;
+    pad.bLeftTrigger=0;poll();
+    pad.bRightTrigger=255;poll();poll();
+    if(MainWindowTestAccess::slotNotice(*w)!=L"Slot 1 \u2014 (Empty)") return false;
+    pad.bRightTrigger=0;poll();
+    pad.wButtons=XINPUT_GAMEPAD_RIGHT_THUMB;poll();
+    if(GetMenu(w->handle())) return false;
+    pad.wButtons=0;poll();
+    pad.wButtons=XINPUT_GAMEPAD_RIGHT_THUMB;poll();
+    if(!GetMenu(w->handle())) return false;
+    pad.wButtons=0;poll();
+    const auto quickPad=[&](WORD button,RunnerOperation operation) {
+        const auto previous=MainWindowTestAccess::snapshot(*w).operationSerial;
+        pad.wButtons=button;poll();
+        pad.wButtons=0;poll();
+        waitFor(*w,[&](const auto& s){return !s.busy && s.operationSerial>previous;});
+        const auto& result=MainWindowTestAccess::snapshot(*w);
+        return result.operation==operation && result.operationSucceeded;
+    };
+    if(!quickPad(XINPUT_GAMEPAD_LEFT_SHOULDER,RunnerOperation::SaveState) || rows()[0].slot!=1 ||
+        !quickPad(XINPUT_GAMEPAD_RIGHT_SHOULDER,RunnerOperation::LoadState)) return false;
+    poll(); // Restoring clears input and requires a released sample before the next shortcut.
+    pad.wButtons=XINPUT_GAMEPAD_LEFT_THUMB;poll();
+    waitFor(*w,[](const auto& s){return s.fastForward;});
+    pad.wButtons=0;poll();
     const auto serial=MainWindowTestAccess::snapshot(*w).operationSerial;
     press(*w,'5');release(*w,'5');press(*w,VK_F6);release(*w,VK_F6);
     w->pumpOnce(20);

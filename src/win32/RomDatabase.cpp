@@ -28,6 +28,18 @@ std::variant<Statement,DatabaseError> prepare(sqlite3* db,const char* sql) {
     if(code!=SQLITE_OK) return sqlError(db,code);
     return owner;
 }
+std::optional<DatabaseError> writeShortcuts(sqlite3* db,const ShortcutBindings& shortcuts) {
+    auto prepared=prepare(db,"INSERT OR REPLACE INTO app_shortcuts VALUES(1,?1,?2,?3,?4,?5,?6)");
+    if(auto* error=std::get_if<DatabaseError>(&prepared)) return *error;
+    auto* row=std::get<Statement>(prepared).get();
+    for(size_t i=0;i<shortcuts.size();++i) {
+        const auto code=sqlite3_bind_int(row,static_cast<int>(i+1),static_cast<int>(shortcuts[i]));
+        if(code!=SQLITE_OK) return sqlError(db,code);
+    }
+    const auto code=sqlite3_step(row);
+    if(code!=SQLITE_DONE) return sqlError(db,code);
+    return {};
+}
 std::variant<int,DatabaseError> integer(sqlite3* db,const char* sql) {
     sqlite3_stmt* statement=nullptr;
     const auto prepared=sqlite3_prepare_v2(db,sql,-1,&statement,nullptr);
@@ -51,7 +63,7 @@ bool settingsValid(const RomSettings& s,uint32_t bytes) {
     if(!textValid(s.fmPlugin.native())) return false;
     if(!s.fmPlugin.empty() && (s.fmPlugin.has_parent_path() || _wcsicmp(s.fmPlugin.extension().c_str(),L".dll"))) return false;
     if(s.mapper==MapperKind::RomOnly) return !s.ramBytes && supportsLinearRomSize(bytes,s.machine);
-    if(s.mapper==MapperKind::Sega) return bytes>=8192 && bytes<=1048576 && std::has_single_bit(bytes);
+    if(s.mapper==MapperKind::Sega) return supportsSegaRomSize(bytes,s.machine);
     if(s.mapper==MapperKind::Codemasters) return (s.ramBytes==0 || s.ramBytes==8192) && bytes>=32768 && bytes<=1048576 && std::has_single_bit(bytes);
     return false;
 }
@@ -234,7 +246,8 @@ std::variant<RomDatabase,DatabaseError> RomDatabase::open(const std::filesystem:
     if(auto error=db.execute("PRAGMA foreign_keys=ON;BEGIN IMMEDIATE")) return *error;
     auto version=integer(handle,"PRAGMA user_version");
     if(auto* error=std::get_if<DatabaseError>(&version)) return *error;
-    if(std::get<int>(version)==0) {
+    const auto versionNumber=std::get<int>(version);
+    if(versionNumber==0) {
         auto objects=integer(handle,"SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'");
         if(auto* error=std::get_if<DatabaseError>(&objects)) return *error;
         if(std::get<int>(objects)!=0) return DatabaseError{DatabaseErrorKind::NotEmpty,SQLITE_OK,"Unversioned database is not empty"};
@@ -262,21 +275,42 @@ std::variant<RomDatabase,DatabaseError> RomDatabase::open(const std::filesystem:
             "CREATE TABLE cheats(rom_id INTEGER NOT NULL REFERENCES roms(id),machine INTEGER NOT NULL,"
             "position INTEGER NOT NULL,name TEXT NOT NULL,address INTEGER NOT NULL,width INTEGER NOT NULL,"
             "value INTEGER NOT NULL,enabled INTEGER NOT NULL,always INTEGER NOT NULL,PRIMARY KEY(rom_id,machine,position)) STRICT;"
-            "PRAGMA user_version=1")) return *error;
+            )) return *error;
     } else {
-        const auto versionNumber=std::get<int>(version);
         const auto reject=[&] {
             const auto* filename=sqlite3_db_filename(handle,"main");
             const auto reason="Unsupported database schema version "+std::to_string(versionNumber)+
-                " (expected version 1 with application settings and cheats)";
+                " (expected a supported version 1 or 2 schema)";
             return DatabaseError{DatabaseErrorKind::UnsupportedVersion,SQLITE_OK,
                 filename && *filename?std::string(filename)+": "+reason:reason};
         };
-        if(versionNumber!=1) return reject();
+        if(versionNumber!=1 && versionNumber!=2) return reject();
         auto required=integer(handle,"SELECT count(*) FROM sqlite_schema WHERE type='table' AND "
             "name IN('roms','rom_settings','sram','states','app_settings','app_controllers','cheats')");
         if(const auto* error=std::get_if<DatabaseError>(&required)) return *error;
         if(std::get<int>(required)!=7) return reject();
+        if(versionNumber==2) {
+            auto shortcuts=integer(handle,"SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='app_shortcuts'");
+            if(const auto* error=std::get_if<DatabaseError>(&shortcuts)) return *error;
+            if(std::get<int>(shortcuts)!=1) return reject();
+        }
+    }
+    if(versionNumber<2) {
+        auto bindings=defaultShortcuts;
+        if(versionNumber==1) {
+            auto prepared=prepare(handle,"SELECT b1,b2,b3,b4 FROM app_controllers WHERE player=1");
+            if(const auto* error=std::get_if<DatabaseError>(&prepared)) return *error;
+            auto* row=std::get<Statement>(prepared).get();
+            const auto code=sqlite3_step(row);
+            if(code!=SQLITE_ROW && code!=SQLITE_DONE) return sqlError(handle,code);
+            if(code==SQLITE_ROW) for(int column=0;column<4;++column)
+                for(auto& binding:bindings) if(binding==sqlite3_column_int64(row,column)) binding=0;
+        }
+        if(auto error=db.execute("CREATE TABLE app_shortcuts(id INTEGER PRIMARY KEY CHECK(id=1),"
+            "save INTEGER NOT NULL,load INTEGER NOT NULL,previous INTEGER NOT NULL,next INTEGER NOT NULL,"
+            "fast_forward INTEGER NOT NULL,fullscreen INTEGER NOT NULL) STRICT;")) return *error;
+        if(auto error=writeShortcuts(handle,bindings)) return *error;
+        if(auto error=db.execute("PRAGMA user_version=2")) return *error;
     }
     if(auto error=db.execute("COMMIT")) return *error;
     return db;
@@ -409,12 +443,24 @@ std::variant<AppSettings,DatabaseError> RomDatabase::readAppSettings() {
         }
     }
     if(result!=SQLITE_DONE) return result==SQLITE_ROW?invalidRow():sqlError(db_,result);
+    auto shortcuts=prepare(db_,"SELECT save,load,previous,next,fast_forward,fullscreen FROM app_shortcuts WHERE id=1");
+    if(const auto* error=std::get_if<DatabaseError>(&shortcuts)) return *error;
+    auto* bindings=std::get<Statement>(shortcuts).get();
+    const auto bindingResult=sqlite3_step(bindings);
+    if(bindingResult!=SQLITE_ROW) return bindingResult==SQLITE_DONE?invalidRow():sqlError(db_,bindingResult);
+    for(size_t i=0;i<out.shortcuts.size();++i) {
+        const auto stored=sqlite3_column_int64(bindings,static_cast<int>(i));
+        if(stored<0 || stored>rightTriggerButton) return invalidRow();
+        out.shortcuts[i]=static_cast<unsigned>(stored);
+    }
+    if(validateShortcuts(out.shortcuts,out.controllers?(*out.controllers)[0]:PadConfiguration{})) return invalidRow();
     if(auto error=execute("COMMIT")) return *error;
     return out;
 }
 
-std::optional<DatabaseError> RomDatabase::saveAppSettings(const RomDefaults& rom,const ControllerConfiguration& controllers) {
-    if(!textValid(rom.fmPlugin.native())) return invalidRow();
+std::optional<DatabaseError> RomDatabase::saveAppSettings(const RomDefaults& rom,const ControllerConfiguration& controllers,
+    const ShortcutBindings& shortcuts) {
+    if(!textValid(rom.fmPlugin.native()) || validateShortcuts(shortcuts,controllers[0])) return invalidRow();
     if(auto error=execute("BEGIN IMMEDIATE")) return error;
     Rollback rollback{db_};
     auto prepared=prepare(db_,"UPDATE app_settings SET machine=?1,video=?2,mapper=?3,ram=?4,copier=?5,fm=?6,plugin=?7,interpolation=?8 WHERE id=1");
@@ -448,6 +494,7 @@ std::optional<DatabaseError> RomDatabase::saveAppSettings(const RomDefaults& rom
         if((code=sqlite3_step(s))!=SQLITE_DONE) return sqlError(db_,code);
         if((code=sqlite3_reset(s))!=SQLITE_OK) return sqlError(db_,code);
     }
+    if(auto error=writeShortcuts(db_,shortcuts)) return error;
     return execute("COMMIT");
 }
 

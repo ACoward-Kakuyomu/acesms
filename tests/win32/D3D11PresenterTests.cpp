@@ -181,6 +181,19 @@ bool fpsOverlay() {
         }
     }
     if(!letters || !background) return false;
+    p.setSlotNotice(L"Slot 5 \u2014 2026-11-24 12:00:00 \u65e5\u672c");
+    const auto firstTitle=PresenterTestAccess::capture(p,640,480);
+    p.setSlotNotice(L"Slot 5 \u2014 2026-11-24 12:00:00 \u7c73\u56fd");
+    const auto secondTitle=PresenterTestAccess::capture(p,640,480);
+    bool titleChanged=false;
+    for(unsigned y=0;y<480;++y) for(unsigned x=0;x<640;++x) {
+        const auto i=y*640+x;
+        if(x>=640-144 || y>=32) {
+            if(!same(firstTitle[i],large[i]) || !same(secondTitle[i],large[i])) return false;
+        } else if(!same(firstTitle[i],secondTitle[i])) titleChanged=true;
+    }
+    if(!titleChanged) return false;
+    p.setSlotNotice(L"");
     constexpr std::string_view longest="FPS 18446744073709551615.9";
     p.setFpsText(longest);
     const auto atCapacity=PresenterTestAccess::capture(p,640,480);

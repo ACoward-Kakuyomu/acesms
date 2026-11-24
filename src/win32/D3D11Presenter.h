@@ -26,11 +26,13 @@ public:
     void setAspectRatio(AspectRatio value) { aspectRatio_ = value; }
     AspectRatio aspectRatio() const { return aspectRatio_; }
     void setFpsText(std::string_view text); // Empty or "FPS <number>" with one decimal place.
+    void setSlotNotice(std::wstring_view text);
     PresentResult present(bool retryOccluded = false, bool fastForward = false);
 private:
     friend struct PresenterTestAccess;
     void createTarget();
     void draw();
+    void uploadSlotNotice(unsigned availableWidth);
     PresentResult finishPresent(HRESULT result, bool fastForward);
     void check(HRESULT result, const char* operation) const;
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
@@ -43,6 +45,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> fpsView_;
     std::string fpsText_;
     unsigned fpsWidth_{};
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> slotTexture_;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> slotView_;
+    std::wstring slotNotice_;
+    unsigned slotWidth_{}, slotAvailableWidth_{};
     Microsoft::WRL::ComPtr<ID3D11VertexShader> vertex_;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel_;
     Microsoft::WRL::ComPtr<ID3D11Buffer> crop_;

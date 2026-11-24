@@ -41,9 +41,9 @@ void opening(const std::filesystem::path& dir) {
     require(std::string_view(sqlite3_sourceid())=="2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76","fixed source ID");
     const auto path=fresh(dir,L"\u65e5\u672c\u8a9e.sqlite3");
     {
-        auto db=open(path);require(scalar(db.nativeHandle(),"PRAGMA user_version")==1,"new version");
+        auto db=open(path);require(scalar(db.nativeHandle(),"PRAGMA user_version")==2,"new version");
         require(scalar(db.nativeHandle(),"PRAGMA foreign_keys")==1,"FK enabled");
-        require(scalar(db.nativeHandle(),"SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'")==7,"ROM, SRAM, state, application settings and cheat tables");
+        require(scalar(db.nativeHandle(),"SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'")==8,"ROM, SRAM, state, application settings, shortcuts and cheat tables");
         const auto defaults=std::get<AppSettings>(db.readAppSettings());
         require(!defaults.controllers && !defaults.fourThree && defaults.rom.options.sramBytes==32768,"fresh app defaults");
         auto rom=defaults.rom;
@@ -73,6 +73,33 @@ void opening(const std::filesystem::path& dir) {
     require(std::filesystem::remove(path),"connection released file");
 }
 void schema(const std::filesystem::path& dir) {
+    const auto versionOne=fresh(dir,L"public-v1.sqlite3");
+    {
+        auto db=open(versionOne);
+        sql(db.nativeHandle(),"DROP TABLE app_shortcuts; PRAGMA user_version=1;"
+            "INSERT INTO app_controllers VALUES(1,2,0,0,0,0,0,0,0,0,0,256,512,64,32768);"
+            "INSERT INTO app_controllers VALUES(2,0,0,0,0,0,0,0,0,0,0,4096,8192,16384,32768);");
+    }
+    {
+        auto db=open(versionOne);
+        auto settings=std::get<AppSettings>(db.readAppSettings());
+        require(scalar(db.nativeHandle(),"PRAGMA user_version")==2 &&
+            (*settings.controllers)[0].buttons==std::array<unsigned,4>{256,512,64,32768} &&
+            settings.shortcuts==ShortcutBindings{0,0,leftTriggerButton,rightTriggerButton,0,128},
+            "preserve game bindings and drop only conflicting shortcut defaults");
+        settings.shortcuts[2]=0;
+        require(!db.saveAppSettings(settings.rom,*settings.controllers,settings.shortcuts),"save unassigned trigger");
+    }
+    {
+        auto db=open(versionOne);
+        require(std::get<AppSettings>(db.readAppSettings()).shortcuts[2]==0,"explicit unassigned persisted");
+    }
+    const auto collision=fresh(dir,L"migration-fails.sqlite3");
+    std::filesystem::copy_file(versionOne,collision);
+    { auto db=raw(collision);sql(db.get(),"PRAGMA user_version=1"); }
+    const auto beforeMigration=bytes(collision);
+    require(std::holds_alternative<DatabaseError>(RomDatabase::open(collision)) && bytes(collision)==beforeMigration,
+        "failed migration changed database");
     const auto previousSchema=fresh(dir,L"before-cheats.sqlite3");
     {auto db=raw(previousSchema);sql(db.get(),"PRAGMA user_version=1;CREATE TABLE roms(id);CREATE TABLE rom_settings(id);"
         "CREATE TABLE sram(id);CREATE TABLE states(id);CREATE TABLE app_settings(id);CREATE TABLE app_controllers(id);");}
@@ -136,7 +163,7 @@ void commit(const std::filesystem::path& dir) {
     sql(reader.get(),"ROLLBACK");reader.reset();
     require(bytes(path)==previous,"failed init changed bytes");
     {auto check=raw(path);require(scalar(check.get(),"PRAGMA user_version")==0,"failed commit advanced version");}
-    {auto db=open(path);require(scalar(db.nativeHandle(),"PRAGMA user_version")==1,"retry after explicit release");}
+    {auto db=open(path);require(scalar(db.nativeHandle(),"PRAGMA user_version")==2,"retry after explicit release");}
 }
 void cheats(const std::filesystem::path& dir) {
     const auto path=fresh(dir,L"cheats.sqlite3");

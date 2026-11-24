@@ -34,6 +34,7 @@ struct AppSettings {
     bool fourThree{};
     RomDefaults rom;
     std::optional<ControllerConfiguration> controllers;
+    ShortcutBindings shortcuts{defaultShortcuts};
 };
 struct RomIdentity {
     std::array<uint8_t,32> sha256{};
@@ -139,7 +140,8 @@ public:
     sqlite3* nativeHandle() const noexcept {return db_;}
     std::optional<DatabaseError> execute(const char* sql);
     std::variant<AppSettings,DatabaseError> readAppSettings();
-    std::optional<DatabaseError> saveAppSettings(const RomDefaults& rom,const ControllerConfiguration& controllers);
+    std::optional<DatabaseError> saveAppSettings(const RomDefaults& rom,const ControllerConfiguration& controllers,
+        const ShortcutBindings& shortcuts=defaultShortcuts);
     std::optional<DatabaseError> saveAspectRatio(bool fourThree);
     std::variant<std::vector<Cheat>,DatabaseError> readCheats(int64_t romId,Machine machine);
     std::optional<DatabaseError> saveCheats(int64_t romId,Machine machine,std::span<const Cheat> cheats);

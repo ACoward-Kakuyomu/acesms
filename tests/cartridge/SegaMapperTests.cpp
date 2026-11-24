@@ -6,12 +6,12 @@
 #include <string_view>
 
 namespace {
-smsgg::RomImage makeImage(size_t size, size_t sram = 0) {
+auto loadImage(size_t size, size_t sram = 0) {
     std::vector<uint8_t> bytes(size);
     for (size_t i = 0; i < size; ++i) {
         bytes[i] = static_cast<uint8_t>((i / 16384) * 37 + (i % 16384) / 256 * 3 + i % 256);
     }
-    return std::get<smsgg::RomImage>(smsgg::RomLoader::fromBytes(std::move(bytes), {smsgg::MapperKind::Sega, sram}));
+    return smsgg::RomLoader::fromBytes(std::move(bytes), {smsgg::MapperKind::Sega, sram});
 }
 
 uint8_t expectedByte(const smsgg::RomImage& image, unsigned bank, size_t offset) {
@@ -23,9 +23,15 @@ uint8_t expectedByte(const smsgg::RomImage& image, unsigned bank, size_t offset)
 bool rom() {
     constexpr std::array<unsigned, 7> boundaries{0, 0x3ff, 0x400, 0x1fff, 0x2000, 0x3ffe, 0x3fff};
     constexpr std::array<unsigned, 8> probes{0, 0x3ff, 0x400, 0x3fff, 0x4000, 0x7fff, 0x8000, 0xbfff};
-    for (const size_t size : {8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576}) {
-        const auto image = makeImage(size);
-        smsgg::SegaMapper mapper(image);
+    for (const size_t size : {8192, 16384, 32768, 65536, 131072, 262144, 524288, 768 * 1024, 1048576}) {
+        const auto loaded = loadImage(size, 8192);
+        if (!std::holds_alternative<smsgg::RomImage>(loaded)) {
+            std::cerr << "Cannot load " << size << "-byte Sega ROM\n";
+            return false;
+        }
+        const auto& image = std::get<smsgg::RomImage>(loaded);
+        std::array<uint8_t, 8192> storage{};
+        smsgg::SegaMapper mapper(image, storage);
         for (unsigned slot = 0; slot < 3; ++slot) {
             for (unsigned bank = 0; bank < 256; ++bank) {
                 mapper.reset(); mapper.write8(static_cast<uint16_t>(0xfffd + slot), static_cast<uint8_t>(bank));
@@ -48,13 +54,19 @@ bool rom() {
                 }
             }
         }
+        mapper.write8(0xfffc, 8);
+        mapper.write8(0xffff, 0x40);
+        mapper.write8(0x8000, 0xa5);
+        if (mapper.read8(0x8000) != 0xa5) return false;
+        mapper.write8(0xfffc, 0);
+        if (mapper.read8(0x8000) != expectedByte(image, 0x40, 0)) return false;
     }
     return true;
 }
 
 bool reset() {
     for (const size_t size : {8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576}) {
-        const auto image = makeImage(size);
+        const auto image = std::get<smsgg::RomImage>(loadImage(size));
         smsgg::SegaMapper mapper(image);
         for (unsigned address = 0; address < 0xc000; ++address) {
             const auto expected = expectedByte(image, address / 16384, address % 16384);
@@ -76,7 +88,7 @@ bool reset() {
 }
 bool sram() {
     for (const size_t size : {0, 8192, 16384, 32768}) {
-        const auto image = makeImage(65536, size);
+        const auto image = std::get<smsgg::RomImage>(loadImage(65536, size));
         std::vector<uint8_t> storage(size), expected(size);
         smsgg::SegaMapper mapper(image, storage);
         for (unsigned offset = 0; offset < 16384; ++offset) {

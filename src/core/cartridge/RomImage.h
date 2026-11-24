@@ -2,6 +2,7 @@
 
 #include "core/Machine.h"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -17,6 +18,13 @@ enum class CopierHeader { None, Strip512 };
 constexpr bool supportsLinearRomSize(uintmax_t size, Machine machine) {
     return size == 8192 || size == 16384 || size == 32768 || size == 49152
         || (machine == Machine::Sg1000 && size == 40960);
+}
+
+inline constexpr size_t segaRomSize768KiB = 768 * 1024;
+
+constexpr bool supportsSegaRomSize(uintmax_t size, Machine machine) {
+    return (size >= 8192 && size <= 1048576 && std::has_single_bit(size))
+        || (machine == Machine::Sms && size == segaRomSize768KiB);
 }
 
 struct LoadOptions {

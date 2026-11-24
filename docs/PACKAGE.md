@@ -6,7 +6,7 @@ ACoward's Emulator Sega Master System。Windows 11 x64向けのSMS / Game Gear /
 
 Windows 11 x64、MSVCのx64ランタイム、D3D11描画とWASAPI共有音声を利用できる環境が必要です。ZIP全体を同じdirectory構成のまま展開し、acesms.exeを起動してください。インストーラーや自動更新はありません。ROMやBIOSは同梱していません。
 
-DBスキーマとステート形式はそれぞれ版1です。新規DBを作る場合は、本体の終了後に既存DBを手動で退避してください。
+DBスキーマは版2、ステート形式は版1です。新規DBを作る場合は、本体の終了後に既存DBを手動で退避してください。
 
 ## 起動と入力
 
@@ -23,6 +23,7 @@ File → Open ROM…で手元のROMを選びます。初回はRegister ROMで機
 - 連射1 / 2の既定は1PキーボードがA / S、XInputがX / Yです。長押しで対応ボタンを2フレームずつ押下・解放し、通常ボタンも押している間は押下を維持します。全機種で利用でき、割り当ての変更・解除はController Configurationから行います。
 - 1PのEnterまたはXInput StartはSMSのPause、SG-1000のHold、GGのStart（押している間）です。
 - Spaceまたは1PのXInput Backでホスト側を一時停止します。Emulation → Muteでミュートします。
+- 1Pの入力元がXInputの場合は、Controller Configuration → XInput shortcuts…で本体操作を変更・解除できます。初期割り当てはLBで即時保存、RBで復元、LT／RTで前後のステートスロット、LSで高速駆動、RSで全画面です。スロット変更時はウィンドウ・全画面のどちらでも左上に選択先を表示します。
 - Alt+Enterでボーダーレス全画面を切り替えます。メニューからは Emulation → Fullscreen で全画面に入り、全画面中は右クリック → Exit fullscreen で戻ります。
 - ウィンドウ表示中は F8 で表示倍率を×1〜×5の範囲で切り替えます。現在のモニターの作業領域に収まる倍率を順に選びます。
 - F7で映像右上のFPS表示を切り替えます。通常・高速駆動ともにエミュレーションが完成させたフレーム数を毎秒表示します。
@@ -48,11 +49,13 @@ File → Manage states… で現在のROMのステートを一覧表示します
 
 ### DBの手動バックアップと復元
 
-書込み可能なフォルダにZIPを展開してください。DBに書き込めない場合は、対象パスと理由を表示します。`%LOCALAPPDATA%` への切替や自動移行は行いません。
+書込み可能なフォルダにZIPを展開してください。DBに書き込めない場合は、対象パスと理由を表示します。DBは実行ファイルと同じフォルダに置きます。
 
 1. **バックアップ**　必要なステートを保存し、SRAM保存が成功してから、同じDBを使う本体をすべて正常終了します。実行ファイル横の `acesms.sqlite3` を別のフォルダや媒体へコピーします。
 2. **復元**　本体を終了し、現在の `acesms.sqlite3` を別の場所に退避します。バックアップを実行ファイル横へ同じ名前でコピーしてから、本体を起動します。
-3. **ZIPの更新・別PCへの移行**　同じDB形式に対応するZIPを別フォルダに展開し、旧本体を正常終了してからDBを新しい実行ファイルの横へコピーします。コピー先に既存DBがある場合は先に退避します。
+3. **ZIPの更新・別PCへの移行**　新しいZIPを別フォルダに展開し、旧本体を正常終了してからDBのコピーを新しい実行ファイルの横に置きます。コピー先に既存DBがある場合は先に退避します。
+
+1.0.1の初回起動時に、公開版1.0.0のDBは版2へ更新されます。1.0.0に戻す場合は、更新前のバックアップを使います。
 
 アプリ内のバックアップ・復元機能は設けません。異常終了直後はDB本体だけをコピーせず、本体を再起動してROMを開き、正常に終了してからコピーしてください。配布ZIPに利用者のDBは含まれません。DBにはROM本体やFMプラグインは含まれません。
 
@@ -91,7 +94,7 @@ acesms (ACoward's Emulator Sega Master System) is a Sega Master System, Game Gea
 
 Extract the entire ZIP to a writable folder and run `acesms.exe`. The emulator requires the x64 Microsoft Visual C++ runtime, Direct3D 11, and WASAPI shared-mode audio. The package contains no ROMs, BIOS, installer, or updater.
 
-The database schema and save-state format are both version 1. To start with a fresh database, exit acesms and move the current database out of its folder.
+The database schema is version 2 and the save-state format is version 1. To start with a fresh database, exit acesms and move the current database out of its folder.
 
 ### Opening ROMs and controls
 
@@ -105,6 +108,7 @@ To change settings for the current ROM, choose File → Edit ROM settings…, th
 - Default Player 1 keys are the arrow keys and Z / X for buttons 1 / 2. XInput supports controller slots 1–4, the D-pad or left stick for directions, and A / B for buttons 1 / 2 by default.
 - Hold A / S on the default keyboard or X / Y on XInput for rapid fire. The corresponding button alternates between pressed and released every two frames. Holding the regular button keeps it pressed. Rapid fire bindings can be changed or cleared on all supported systems.
 - Player 1 Enter or XInput Start triggers SMS Pause, SG-1000 Hold, or GG Start (while held). Space or Player 1 XInput Back toggles host pause. Emulation → Mute toggles audio.
+- With Player 1 set to XInput, open Controller Configuration → XInput shortcuts… to change or clear the bindings. By default, LB saves immediately, RB restores, LT / RT select the previous / next state slot, LS toggles fast forward, and RS toggles fullscreen. Slot changes briefly show the active slot in the upper-left corner in both windowed and fullscreen mode.
 - F2 or Emulation → Fast forward toggles fast forward. While active, the emulator skips VSync and audio pacing. It plays samples that fit in the available PCM buffer and drops the rest.
 - Alt+Enter toggles borderless fullscreen. Use Emulation → Fullscreen to enter it from the menu, and right-click → Exit fullscreen to leave it.
 - F7 toggles an FPS counter in the upper-right corner. It counts completed emulated frames per second at either speed. In windowed mode, F8 cycles the scales from 1× to 5× that fit in the monitor's work area.
@@ -124,7 +128,10 @@ Global settings, ROM settings, Sega SRAM (8, 16, or 32 KiB), save states, and ch
 
 1. **Back up.** Save any desired states and close every instance using the database normally so SRAM can be written. Copy `acesms.sqlite3` to another folder or device.
 2. **Restore.** Close acesms, move the current database aside, and copy the backup next to the executable under the name `acesms.sqlite3`. Then start acesms.
-3. **Upgrade or move to another PC.** Extract a ZIP that supports the same database format. After closing the old installation normally, copy the database next to the new executable. Move aside any database already at the destination.
+
+3. **Upgrade or move to another PC.** Extract the new ZIP to a separate folder. After closing the old installation normally, place a copy of the database next to the new executable. Move aside any database already at the destination.
+
+On first launch, 1.0.1 upgrades databases from the public 1.0.0 release to schema version 2. To return to 1.0.0, use the backup made before the upgrade.
 
 After a crash, reopen acesms, load a ROM, and exit normally before copying the database. The database contains no ROM binaries or FM plug-ins. If the database cannot be written, acesms displays the path and reason.
 

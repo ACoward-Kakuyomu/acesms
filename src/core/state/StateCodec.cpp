@@ -108,8 +108,10 @@ std::variant<StateProfile,StateCodecError> inspectStateProfile(std::span<const u
         (p.machine==Machine::GameGear && (p.video!=VideoStandard::Ntsc || fm)) || (fm && p.video!=VideoStandard::Ntsc)) return Error::Profile;
     if(p.mapper==MapperKind::RomOnly) {
         if(p.ramBytes || !supportsLinearRomSize(p.romBytes, p.machine)) return Error::Profile;
-    } else if(p.romBytes<8192 || p.romBytes>1048576 || !std::has_single_bit(p.romBytes) ||
-        (p.mapper==MapperKind::Codemasters && (p.romBytes<32768 || p.ramBytes>8192))) return Error::Profile;
+    } else if(p.mapper==MapperKind::Sega) {
+        if(!supportsSegaRomSize(p.romBytes, p.machine)) return Error::Profile;
+    } else if(p.romBytes<32768 || p.romBytes>1048576 || !std::has_single_bit(p.romBytes) ||
+        p.ramBytes>8192) return Error::Profile;
     const auto base=stateFileBytes(p);
     if(bytes.size()<base || length!=bytes.size()-base) return Error::Size;
     if(fm) {

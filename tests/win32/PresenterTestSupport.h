@@ -9,6 +9,7 @@
 namespace smsgg::win32 {
 struct PresenterTestAccess {
     static const auto& fpsText(const D3D11Presenter& p) { return p.fpsText_; }
+    static const auto& slotNotice(const D3D11Presenter& p) { return p.slotNotice_; }
     static PresentResult finishPresent(D3D11Presenter& p,HRESULT result,bool fastForward) {
         return p.finishPresent(result,fastForward);
     }

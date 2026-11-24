@@ -346,11 +346,75 @@ private:
     bool canSave_;
 };
 }
+class XInputShortcutsDialog final : public ATL::CDialogImpl<XInputShortcutsDialog> {
+public:
+    enum { IDD=IDD_XINPUT_SHORTCUTS };
+    XInputShortcutsDialog(const XInputController& gamepad,unsigned slot,ShortcutBindings& shortcuts)
+        : gamepad_(gamepad),slot_(slot),shortcuts_(shortcuts) {}
+
+    BEGIN_MSG_MAP(XInputShortcutsDialog)
+        MESSAGE_HANDLER(WM_INITDIALOG,initialize)
+        MESSAGE_HANDLER(WM_TIMER,poll)
+        COMMAND_ID_HANDLER(IDOK,accept)
+        COMMAND_ID_HANDLER(IDCANCEL,cancel)
+    END_MSG_MAP()
+private:
+    LRESULT initialize(UINT,WPARAM,LPARAM,BOOL&) {
+        for(size_t i=0;i<shortcuts_.size();++i) {
+            const auto id=IDC_SHORTCUT_BASE+static_cast<int>(i);
+            for(const auto& button:shortcutButtons)
+                SendDlgItemMessage(id,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(button.label));
+            const auto choice=std::ranges::find(shortcutButtons,shortcuts_[i],&XInputButtonChoice::mask);
+            SendDlgItemMessage(id,CB_SETCURSEL,choice-shortcutButtons.begin(),0);
+        }
+        if(!::SetTimer(m_hWnd,1,16,nullptr)) EndDialog(-1);
+        return TRUE;
+    }
+    LRESULT poll(UINT,WPARAM,LPARAM,BOOL&) {
+        const auto state=gamepad_.poll(slot_);
+        const auto previous=std::exchange(previousButtons_,state.buttons);
+        if(!state.connected || ::GetActiveWindow()!=m_hWnd) {
+            armed_=false;
+            return 0;
+        }
+        if(!state.buttons) armed_=true;
+        if(!armed_ || !std::has_single_bit(state.buttons) || (previous&state.buttons)) return 0;
+        const auto chosen=std::ranges::find(shortcutButtons,state.buttons,&XInputButtonChoice::mask);
+        if(chosen==shortcutButtons.end()) return 0;
+        for(size_t i=0;i<shortcuts_.size();++i) {
+            const auto id=IDC_SHORTCUT_BASE+static_cast<int>(i);
+            if(::GetFocus()!=GetDlgItem(id) || SendDlgItemMessage(id,CB_GETDROPPEDSTATE)!=0) continue;
+            SendDlgItemMessage(id,CB_SETCURSEL,chosen-shortcutButtons.begin(),0);
+            ::SetFocus(GetDlgItem(i+1<shortcuts_.size()?id+1:IDOK));
+            break;
+        }
+        return 0;
+    }
+    LRESULT accept(WORD,WORD,HWND,BOOL&) {
+        auto bindings=shortcuts_;
+        for(size_t i=0;i<bindings.size();++i) {
+            const auto choice=comboChoice(m_hWnd,IDC_SHORTCUT_BASE+static_cast<int>(i),shortcutButtons.size());
+            if(!choice) return 0;
+            bindings[i]=shortcutButtons[*choice].mask;
+        }
+        shortcuts_=bindings;
+        EndDialog(IDOK);
+        return 0;
+    }
+    LRESULT cancel(WORD,WORD,HWND,BOOL&) {EndDialog(IDCANCEL);return 0;}
+    const XInputController& gamepad_;
+    unsigned slot_;
+    ShortcutBindings& shortcuts_;
+    unsigned previousButtons_{};
+    bool armed_{};
+};
+
 class MainWindow::SettingsDialog final : public ATL::CDialogImpl<SettingsDialog> {
 public:
     enum { IDD=IDD_SETTINGS };
     explicit SettingsDialog(MainWindow& owner)
-        : owner_(owner),next_(owner.romDefaults_),controllers_(owner.input_.configuration()),backends_{std::filesystem::path{},bundledFmPlugin} {
+        : owner_(owner),next_(owner.romDefaults_),controllers_(owner.input_.configuration()),
+          shortcuts_(owner.input_.shortcuts()),backends_{std::filesystem::path{},bundledFmPlugin} {
         backends_.insert(backends_.end(),owner.fmPlugins_.begin(),owner.fmPlugins_.end());
     }
     const std::exception_ptr& initializationFailure() const { return initializationFailure_; }
@@ -369,6 +433,7 @@ public:
         COMMAND_HANDLER(IDC_PAD_SLOT,CBN_SELCHANGE,padChanged)
         COMMAND_RANGE_HANDLER(IDC_PAD_BUTTON_BASE,IDC_PAD_BUTTON_BASE+3,buttonChanged)
         COMMAND_RANGE_HANDLER(IDC_PAD_CLEAR_RAPID_BASE,IDC_PAD_CLEAR_RAPID_BASE+1,clearRapidKey)
+        COMMAND_ID_HANDLER(IDC_PAD_SHORTCUTS,editShortcuts)
         COMMAND_ID_HANDLER(IDOK,accept)
         COMMAND_ID_HANDLER(IDCANCEL,cancel)
     END_MSG_MAP()
@@ -443,6 +508,7 @@ private:
         const auto& pad=controllers_[player_];
         const bool keyboard=controllerTab_ && pad.source==PadSource::Keyboard;
         const bool xinput=controllerTab_ && pad.source==PadSource::XInput;
+        showControl(IDC_PAD_SHORTCUTS,xinput && player_==0);
         SendDlgItemMessage(IDC_PAD_SOURCE,CB_RESETCONTENT,0,0);
         if(player_) add(IDC_PAD_SOURCE,L"Disabled");
         add(IDC_PAD_SOURCE,L"Keyboard");add(IDC_PAD_SOURCE,L"XInput");
@@ -469,7 +535,7 @@ private:
         }
         for(int i=0;i<2;++i) showControl(IDC_PAD_CLEAR_RAPID_BASE+i,keyboard);
         const auto state=xinput?owner_.gamepad_.poll(pad.slot):GamepadState{};
-        previousButtons_=state.buttons;
+        previousButtons_=state.buttons&~(leftTriggerButton|rightTriggerButton);
         connected_=state.connected;
         if(xinput) updateConnectionLabel();
     }
@@ -510,15 +576,24 @@ private:
         return 0;
     }
 
+    LRESULT editShortcuts(WORD,WORD,HWND,BOOL&) {
+        XInputShortcutsDialog dialog(owner_.gamepad_,controllers_[0].slot,shortcuts_);
+        if(dialog.DoModal(m_hWnd)==-1) SetDlgItemText(IDC_PAD_ERROR,L"Could not open XInput shortcuts.");
+        else SetDlgItemText(IDC_PAD_ERROR,L"");
+        refreshPad();
+        return 0;
+    }
+
     LRESULT pollAssignment(UINT,WPARAM,LPARAM,BOOL&) {
         auto& pad=controllers_[player_];
         if(!controllerTab_ || pad.source!=PadSource::XInput) return 0;
         const auto state=owner_.gamepad_.poll(pad.slot);
-        const auto previous=std::exchange(previousButtons_,state.buttons);
+        const auto buttons=state.buttons&~(leftTriggerButton|rightTriggerButton);
+        const auto previous=std::exchange(previousButtons_,buttons);
         const bool wasConnected=std::exchange(connected_,state.connected);
         if(connected_!=wasConnected) updateConnectionLabel();
-        if(!connected_ || !wasConnected || !std::has_single_bit(state.buttons) || (previous&state.buttons)) return 0;
-        const auto button=std::ranges::find(xinputButtons,state.buttons,&XInputButtonChoice::mask);
+        if(!connected_ || !wasConnected || !std::has_single_bit(buttons) || (previous&buttons)) return 0;
+        const auto button=std::ranges::find(xinputButtons,buttons,&XInputButtonChoice::mask);
         if(button==xinputButtons.end()) return 0;
         for(size_t i=0;i<pad.buttons.size();++i) {
             const auto id=IDC_PAD_BUTTON_BASE+static_cast<int>(i);
@@ -555,6 +630,8 @@ private:
             if((detail&(LPARAM{1}<<30)) || !assignablePadKey(candidate)) return 0;
             BYTE held[256]{};
             ::GetKeyboardState(held);
+            // The IME can report Kanji mode as held independently of the keypress.
+            held[VK_KANJI]=0;
             for(unsigned other=0;other<std::size(held);++other) {
                 if(other!=candidate && (held[other]&0x80) && (assignablePadKey(other) ||
                     other==VK_CONTROL || other==VK_SHIFT || other==VK_MENU)) return 0;
@@ -619,6 +696,16 @@ private:
             ::SetFocus(GetDlgItem(IDC_PAD_PLAYER));
             return 0;
         }
+        if(const auto* operation=validateShortcuts(shortcuts_,controllers_[0])) {
+            player_=0;
+            select(IDC_PAD_PLAYER,0);
+            TabCtrl_SetCurSel(GetDlgItem(IDC_SETTINGS_TABS),1);
+            showTab();
+            const auto message=std::wstring(L"XInput shortcut conflict: ")+operation+L".";
+            SetDlgItemText(IDC_PAD_ERROR,message.c_str());
+            ::SetFocus(GetDlgItem(IDC_PAD_SHORTCUTS));
+            return 0;
+        }
         const auto header = comboChoice(m_hWnd, IDC_ROM_COPIER_HEADER, 2);
         const auto interpolation = comboChoice(m_hWnd, IDC_ROM_INTERPOLATION, 3);
         const auto backend = comboChoice(m_hWnd, IDC_ROM_BACKEND, backends_.size());
@@ -633,7 +720,7 @@ private:
         next_.options.copierHeader=static_cast<CopierHeader>(*header);
         if (available) next_.fmPlugin=backends_[*backend];
         next_.fmMethod=static_cast<FmInterpolation>(*interpolation);
-        if(owner_.saveSettings(next_,controllers_,m_hWnd)) EndDialog(IDOK);
+        if(owner_.saveSettings(next_,controllers_,shortcuts_,m_hWnd)) EndDialog(IDOK);
         return 0;
     }
     LRESULT cancel(WORD,WORD,HWND,BOOL&) {EndDialog(IDCANCEL);return 0;}
@@ -641,6 +728,7 @@ private:
     MainWindow& owner_;
     RomDefaults next_;
     ControllerConfiguration controllers_;
+    ShortcutBindings shortcuts_;
     std::exception_ptr initializationFailure_;
     size_t player_{};
     unsigned previousButtons_{};
@@ -775,6 +863,36 @@ void MainWindow::requestState(const std::filesystem::path& path,bool save) {
     if(save?runner_.saveState(path):runner_.loadState(path)) operationStarted(save?RunnerOperation::SaveState:RunnerOperation::LoadState);
 }
 
+std::wstring MainWindow::stateSlotDetails(unsigned slot) const {
+    const auto it=std::find_if(stateSlots_.begin(),stateSlots_.end(),[&](const auto& s){return s.slot==slot;});
+    if(it==stateSlots_.end()) return L"(Empty)";
+    std::tm local{};
+    wchar_t date[32]{};
+    _localtime64_s(&local,&it->updatedAt);
+    std::wcsftime(date,std::size(date),L"%Y-%m-%d %H:%M:%S",&local);
+    return it->name.empty()?date:std::wstring(date)+L" "+it->name;
+}
+
+void MainWindow::selectStateSlot(unsigned slot) {
+    if(activeStateSlot_==slot) return;
+    activeStateSlot_=slot;
+    updateStateSlots();
+    if(!snapshot_.databaseRecord) return;
+    presenter_->setSlotNotice(L"Slot "+std::to_wstring(slot)+L" \u2014 "+stateSlotDetails(slot));
+    slotNoticeUntil_=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    render(true);
+}
+
+void MainWindow::requestStateSlot(bool save) {
+    if(!canOperate() || !snapshot_.databaseRecord) return;
+    if(save) {
+        if(runner_.saveDatabaseSlot(activeStateSlot_)) operationStarted(RunnerOperation::SaveState);
+        return;
+    }
+    const auto it=std::find_if(stateSlots_.begin(),stateSlots_.end(),[&](const auto& s){return s.slot==activeStateSlot_;});
+    if(it!=stateSlots_.end() && runner_.loadDatabaseState(it->id)) operationStarted(RunnerOperation::LoadState);
+}
+
 void MainWindow::updateStateSlots() {
     const auto menu=fullscreenMenu_.m_hMenu?fullscreenMenu_.m_hMenu: ::GetMenu(m_hWnd);
     const auto file=GetSubMenu(menu,0);
@@ -786,15 +904,7 @@ void MainWindow::updateStateSlots() {
     if(!slots) return;
     while(GetMenuItemCount(slots)>0) DeleteMenu(slots,0,MF_BYPOSITION);
     for(unsigned slot=1;slot<=10;++slot) {
-        const auto it=std::find_if(stateSlots_.begin(),stateSlots_.end(),[&](const auto& s){return s.slot==slot;});
-        std::wstring text=std::to_wstring(slot)+L"  ";
-        if(it==stateSlots_.end()) text+=L"(Empty)";
-        else {
-            std::tm local{};wchar_t date[32]{};
-            _localtime64_s(&local,&it->updatedAt);
-            std::wcsftime(date,std::size(date),L"%Y-%m-%d %H:%M:%S",&local);
-            text+=date;if(!it->name.empty()) text+=L" "+it->name;
-        }
+        std::wstring text=std::to_wstring(slot)+L"  "+stateSlotDetails(slot);
         for(size_t at=0;(at=text.find(L'&',at))!=std::wstring::npos;at+=2) text.insert(at,1,L'&');
         AppendMenuW(slots,MF_STRING|(activeStateSlot_==slot?MF_CHECKED:0),
             IDM_STATE_SLOT_BASE+slot-1,text.c_str());
@@ -890,23 +1000,23 @@ void MainWindow::readSettings() {
     settings.rom.normalize();
     romDefaults_=std::move(settings.rom);
     if(settings.fourThree) presenter_->setAspectRatio(AspectRatio::FourThree);
-    if(settings.controllers) {
-        if(validateControllerConfiguration(*settings.controllers)) startupSettingsError_="Invalid controller settings";
-        else input_.configure(*settings.controllers);
-    }
+    auto controllers=settings.controllers.value_or(defaultControllerConfiguration());
+    if(validateControllerConfiguration(controllers)) startupSettingsError_="Invalid controller settings";
+    else input_.configure(controllers,settings.shortcuts);
 }
 
-bool MainWindow::saveSettings(const RomDefaults& next,const ControllerConfiguration& controllers,HWND owner) {
+bool MainWindow::saveSettings(const RomDefaults& next,const ControllerConfiguration& controllers,
+    const ShortcutBindings& shortcuts,HWND owner) {
     if(!databasePath_.empty()) {
         auto opened=RomDatabase::open(databasePath_);
         if(const auto* error=std::get_if<DatabaseError>(&opened)) {showSettingsError(error->message,owner);return false;}
-        if(auto error=std::get<RomDatabase>(opened).saveAppSettings(next,controllers)) {
+        if(auto error=std::get<RomDatabase>(opened).saveAppSettings(next,controllers,shortcuts)) {
             showSettingsError(error->message,owner);
             return false;
         }
     }
     romDefaults_=next;
-    input_.configure(controllers);
+    input_.configure(controllers,shortcuts);
     return true;
 }
 
@@ -962,8 +1072,7 @@ void MainWindow::updateMenu() {
 
 void MainWindow::onCommand(unsigned id) {
     if(id>=IDM_STATE_SLOT_BASE && id<IDM_STATE_SLOT_BASE+10) {
-        activeStateSlot_=id-IDM_STATE_SLOT_BASE+1;
-        updateStateSlots();
+        selectStateSlot(id-IDM_STATE_SLOT_BASE+1);
         return;
     }
     switch (id) {
@@ -1165,6 +1274,8 @@ void MainWindow::consumeSnapshot() {
     }
     if(completed && snapshot_.operation==RunnerOperation::LoadRom && snapshot_.operationSucceeded) {
         activeStateSlot_=1;stateSlots_.clear();updateStateSlots();
+        slotNoticeUntil_.reset();
+        presenter_->setSlotNotice(L"");
     }
     if(completed && snapshot_.databaseStates) {
         stateSlots_=*snapshot_.databaseStates;
@@ -1426,17 +1537,11 @@ LRESULT MainWindow::onKey(UINT message, WPARAM wParam, LPARAM lParam, BOOL& hand
                 return 0;
             }
             if(wParam>='0' && wParam<='9') {
-                activeStateSlot_=wParam=='0'?10:static_cast<unsigned>(wParam-'0');
-                updateStateSlots();return 0;
+                selectStateSlot(wParam=='0'?10:static_cast<unsigned>(wParam-'0'));
+                return 0;
             }
             if((wParam==VK_F5 || wParam==VK_F6) && canOperate() && snapshot_.databaseRecord) {
-                if(wParam==VK_F5) {
-                    if(runner_.saveDatabaseSlot(activeStateSlot_)) operationStarted(RunnerOperation::SaveState);
-                } else {
-                    const auto it=std::find_if(stateSlots_.begin(),stateSlots_.end(),
-                        [&](const auto& s){return s.slot==activeStateSlot_;});
-                    if(it!=stateSlots_.end() && runner_.loadDatabaseState(it->id)) operationStarted(RunnerOperation::LoadState);
-                }
+                requestStateSlot(wParam==VK_F5);
                 return 0;
             }
         }
@@ -1468,6 +1573,11 @@ void MainWindow::sendInput(bool consolePause) {
 
 LRESULT MainWindow::onInputTimer(UINT, WPARAM wParam, LPARAM, BOOL& handled) {
     if (wParam != inputTimerId) { handled = FALSE; return 0; }
+    if(slotNoticeUntil_ && std::chrono::steady_clock::now()>=*slotNoticeUntil_) {
+        slotNoticeUntil_.reset();
+        presenter_->setSlotNotice(L"");
+        render(true);
+    }
     if(settingsOpen_ || (cheatDialog_ && cheatDialog_->m_hWnd)) return 0;
     InputAction action=InputAction::None;
     for(unsigned player=0;player<(hasSecondPad(snapshot_.machine)?2u:1u);++player) {
@@ -1476,7 +1586,20 @@ LRESULT MainWindow::onInputTimer(UINT, WPARAM wParam, LPARAM, BOOL& handled) {
         const auto current=input_.updateGamepad(player,gamepad_.poll(pad.slot),inputActive_);
         if(player==0) action=current;
     }
-    if (action == InputAction::TogglePause) onCommand(IDM_HOST_PAUSE);
+    switch(action) {
+    case InputAction::TogglePause: onCommand(IDM_HOST_PAUSE); break;
+    case InputAction::ToggleFastForward: onCommand(IDM_FAST_FORWARD); break;
+    case InputAction::ToggleFullscreen: onCommand(IDM_FULLSCREEN); break;
+    case InputAction::SaveState: requestStateSlot(true); break;
+    case InputAction::LoadState: requestStateSlot(false); break;
+    case InputAction::PreviousSlot:
+        if(snapshot_.databaseRecord) selectStateSlot(activeStateSlot_==1?10:activeStateSlot_-1);
+        break;
+    case InputAction::NextSlot:
+        if(snapshot_.databaseRecord) selectStateSlot(activeStateSlot_==10?1:activeStateSlot_+1);
+        break;
+    default: break;
+    }
     sendInput(action == InputAction::ConsolePause);
     return 0;
 }

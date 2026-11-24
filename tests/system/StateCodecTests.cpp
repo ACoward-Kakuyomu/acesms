@@ -328,6 +328,40 @@ bool sg1000() {
     return error(encodeState(p, *state), p, StateCodecError::Value);
 }
 
+bool sega768k() {
+    std::vector<uint8_t> bytes(768 * 1024);
+    for (size_t bank = 0; bank < 48; ++bank) bytes[bank * 0x4000 + 0x400] = static_cast<uint8_t>(bank);
+    const auto loaded = RomLoader::fromBytes(std::move(bytes), {MapperKind::Sega});
+    const auto* rom = std::get_if<RomImage>(&loaded);
+    if (!rom) return false;
+    const Case c{Machine::Sms, VideoStandard::Ntsc, MapperKind::Sega, 48000, false, FmInterpolation::Sinc};
+    const auto p = profile(*rom, c, {});
+    auto system = make(*rom, c, {});
+    auto state = std::make_unique<EmulatorSystemState>();
+    system->captureState(*state);
+    const std::array<uint8_t, 3> banks{0x40, 0x2f, 0xff};
+    std::get<SegaMapperState>(state->cartridge.mapper).banks = banks;
+    const auto blob = encodeState(p, *state);
+    const auto info = inspectStateProfile(blob);
+    const auto* inspected = std::get_if<StateProfile>(&info);
+    if (!inspected || inspected->romBytes != p.romBytes || inspected->romCrc32 != p.romCrc32 ||
+        inspected->machine != p.machine || inspected->mapper != p.mapper) return false;
+    const auto result = decodeState(blob, p);
+    const auto* restored = std::get_if<std::unique_ptr<EmulatorSystemState>>(&result);
+    if (!restored || std::get<SegaMapperState>((*restored)->cartridge.mapper).banks != banks ||
+        system->restoreState(**restored) != ACESMS_FM_OK ||
+        system->readMemory(0x0400) != 16 || system->readMemory(0x4400) != 47 || system->readMemory(0x8400) != 15) return false;
+    auto wrongSize = p, wrongCrc = p;
+    wrongSize.romBytes = 1024 * 1024;
+    wrongCrc.romCrc32 ^= 1;
+    for (const auto& wrong : {wrongSize, wrongCrc}) {
+        const auto rejected = decodeState(blob, wrong);
+        const auto* error = std::get_if<StateCodecError>(&rejected);
+        if (!error || *error != StateCodecError::Identity) return false;
+    }
+    return true;
+}
+
 bool limits() {
     for(auto mapper:{MapperKind::RomOnly,MapperKind::Sega,MapperKind::Codemasters}) for(size_t ram:{0u,8192u,16384u,32768u}) {
         if((mapper==MapperKind::RomOnly && ram) || (mapper==MapperKind::Codemasters && ram>8192)) continue;
@@ -382,6 +416,6 @@ int main(int argc,char** argv) {
 #ifdef _WIN32
     if(argc==4) {const auto dll=std::filesystem::absolute(argv[3]);auto loaded=loadFmPlugin(dll.parent_path(),dll.filename());if(const auto* error=std::get_if<std::string>(&loaded)) {std::cerr<<*error;return 1;}backend=std::get<FmBackendPtr>(std::move(loaded));}
 #endif
-    const std::string_view op=argv[1];const bool passed=op=="format"?format() && savedRate():op=="roundtrip"?roundtrip(backend):op=="cram_history"?cramHistory():op=="reject"?reject(backend):op=="limits"?limits():op=="sg1000"?sg1000():op=="save"?process(argv[2],backend,true):op=="load"&&process(argv[2],backend,false);
+    const std::string_view op=argv[1];const bool passed=op=="format"?format() && savedRate():op=="roundtrip"?roundtrip(backend):op=="cram_history"?cramHistory():op=="reject"?reject(backend):op=="limits"?limits():op=="sg1000"?sg1000():op=="sega_768k"?sega768k():op=="save"?process(argv[2],backend,true):op=="load"&&process(argv[2],backend,false);
     if(!passed) std::cerr<<"State codec failed: "<<op<<'\n';return passed?0:1;
 }

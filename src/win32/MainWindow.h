@@ -76,6 +76,10 @@ private:
     void showStateManager();
     void openCheatDialog(bool editor);
     void updateStateSlots();
+    std::wstring stateSlotDetails(unsigned slot) const;
+    void selectStateSlot(unsigned slot);
+    void requestStateSlot(bool save);
+    std::optional<std::chrono::steady_clock::time_point> slotNoticeUntil_;
     unsigned activeStateSlot_{1};
     bool showStateManagerPending_{};
     std::vector<StateSummary> stateSlots_;
@@ -87,7 +91,8 @@ private:
     bool canOperate() const;
     class SettingsDialog;
     void readSettings();
-    bool saveSettings(const RomDefaults& next, const ControllerConfiguration& controllers, HWND owner);
+    bool saveSettings(const RomDefaults& next, const ControllerConfiguration& controllers,
+        const ShortcutBindings& shortcuts, HWND owner);
     void showSettings();
     void showSettingsError(std::string_view reason, HWND owner);
     void updateMenu();
