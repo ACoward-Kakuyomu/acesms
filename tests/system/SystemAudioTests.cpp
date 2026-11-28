@@ -19,8 +19,8 @@ bool bus() {
     smsgg::MemoryBus memory(cartridge);
     smsgg::Controller pad;
     smsgg::AudioMixer audio(1600,100);
-    smsgg::SmsIo terminal(pad,audio);
     smsgg::Vdp vdp(smsgg::VideoStandard::Ntsc);
+    smsgg::SmsIo terminal(pad,audio,vdp);
     smsgg::VdpIo video(vdp,terminal);
     smsgg::MemoryControl control(memory,video);
     smsgg::IoBus io(control);

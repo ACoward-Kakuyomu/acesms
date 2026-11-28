@@ -6,7 +6,7 @@ ACoward's Emulator Sega Master System。Windows 11 x64向けのSMS / Game Gear /
 
 Windows 11 x64、MSVCのx64ランタイム、D3D11描画とWASAPI共有音声を利用できる環境が必要です。ZIP全体を同じdirectory構成のまま展開し、acesms.exeを起動してください。インストーラーや自動更新はありません。ROMやBIOSは同梱していません。
 
-DBスキーマは版2、ステート形式は版1です。新規DBを作る場合は、本体の終了後に既存DBを手動で退避してください。
+DBスキーマは版3です。1.1.0は公開版1.0.0・1.0.1のステートを復元でき、保存時は形式版2を使います。新規DBを作る場合は、本体の終了後に既存DBを手動で退避してください。
 
 ## 起動と入力
 
@@ -55,7 +55,7 @@ File → Manage states… で現在のROMのステートを一覧表示します
 2. **復元**　本体を終了し、現在の `acesms.sqlite3` を別の場所に退避します。バックアップを実行ファイル横へ同じ名前でコピーしてから、本体を起動します。
 3. **ZIPの更新・別PCへの移行**　新しいZIPを別フォルダに展開し、旧本体を正常終了してからDBのコピーを新しい実行ファイルの横に置きます。コピー先に既存DBがある場合は先に退避します。
 
-1.0.1の初回起動時に、公開版1.0.0のDBは版2へ更新されます。1.0.0に戻す場合は、更新前のバックアップを使います。
+1.1.0は公開版1.0.0・1.0.1のDBを最初に開いた時点で版3へ更新します。既存のステートは保持し、F5で保存・上書きしたときに形式版2を使います。1.0.1以前は版3のDBを開けません。旧版へ戻す場合は、旧本体と更新前のDBバックアップを使います。
 
 アプリ内のバックアップ・復元機能は設けません。異常終了直後はDB本体だけをコピーせず、本体を再起動してROMを開き、正常に終了してからコピーしてください。配布ZIPに利用者のDBは含まれません。DBにはROM本体やFMプラグインは含まれません。
 
@@ -94,7 +94,7 @@ acesms (ACoward's Emulator Sega Master System) is a Sega Master System, Game Gea
 
 Extract the entire ZIP to a writable folder and run `acesms.exe`. The emulator requires the x64 Microsoft Visual C++ runtime, Direct3D 11, and WASAPI shared-mode audio. The package contains no ROMs, BIOS, installer, or updater.
 
-The database schema is version 2 and the save-state format is version 1. To start with a fresh database, exit acesms and move the current database out of its folder.
+The database schema is version 3. acesms 1.1.0 loads save states from the public 1.0.0 and 1.0.1 releases and writes save-state format version 2. To start with a fresh database, exit acesms and move the current database out of its folder.
 
 ### Opening ROMs and controls
 
@@ -131,7 +131,7 @@ Global settings, ROM settings, Sega SRAM (8, 16, or 32 KiB), save states, and ch
 
 3. **Upgrade or move to another PC.** Extract the new ZIP to a separate folder. After closing the old installation normally, place a copy of the database next to the new executable. Move aside any database already at the destination.
 
-On first launch, 1.0.1 upgrades databases from the public 1.0.0 release to schema version 2. To return to 1.0.0, use the backup made before the upgrade.
+When 1.1.0 first opens a database from 1.0.0 or 1.0.1, it upgrades it to schema version 3 and preserves existing save states. F5 saves or overwrites a slot using format version 2. Version 1.0.1 and earlier cannot open a schema version 3 database. To roll back, use the old executable and the pre-upgrade database backup.
 
 After a crash, reopen acesms, load a ROM, and exit normally before copying the database. The database contains no ROM binaries or FM plug-ins. If the database cannot be written, acesms displays the path and reason.
 

@@ -26,7 +26,8 @@ struct StateProfile {
     std::optional<FmStateProfile> fm;
 };
 enum class StateCodecError {Format,Size,Checksum,Identity,Profile,Value};
-size_t stateFileBytes(const StateProfile& profile);
+size_t stateFileBytes(const StateProfile& profile, bool withVdpTrailer = true);
+bool supportsStateFileSize(const StateProfile& profile, size_t bytes);
 std::vector<uint8_t> encodeState(const StateProfile& profile,const EmulatorSystemState& state);
 std::variant<std::unique_ptr<EmulatorSystemState>,StateCodecError> decodeState(std::span<const uint8_t> bytes,const StateProfile& profile);
 struct DecodedState {StateProfile profile;std::unique_ptr<EmulatorSystemState> state;};

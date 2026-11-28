@@ -7,7 +7,7 @@
 namespace {
 class Io final : public smsgg::Z80Io {
 public:
-    uint8_t readPort(uint16_t) override { return 0xff; }
+    uint8_t readPort(uint16_t, uint64_t) override { return 0xff; }
     void writePort(uint16_t, uint8_t, uint64_t) override {}
 };
 

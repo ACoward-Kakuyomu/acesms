@@ -45,10 +45,44 @@ bool clockProgression() {
     return true;
 }
 
+bool smsBootVdp() {
+    std::vector<uint8_t> bytes(8192);
+    size_t at = 0;
+    auto out = [&](uint8_t port, uint8_t value) {
+        for (const uint8_t byte : {uint8_t{0x3e}, value, uint8_t{0xd3}, port}) bytes[at++] = byte;
+    };
+    auto address = [&](uint16_t value, uint8_t code) {
+        out(0xbf, static_cast<uint8_t>(value));
+        out(0xbf, static_cast<uint8_t>((code << 6) | (value >> 8)));
+    };
+    address(1, 3); out(0xbe, 0x03); // Red background color 1.
+    address(17, 3); out(0xbe, 0x30); // Blue sprite color 1.
+    address(32, 1);
+    for (unsigned row = 0; row < 8; ++row) {
+        out(0xbe, 0xff); out(0xbe, 0); out(0xbe, 0); out(0xbe, 0);
+    }
+    address(0x3802, 1); out(0xbe, 1); out(0xbe, 0);
+    address(0x3f00, 1); out(0xbe, 0xff); out(0xbe, 0xd0);
+    address(0x3f80, 1); out(0xbe, 16); out(0xbe, 1);
+    out(0xbf, 0x40); out(0xbf, 0x81); // Enable display without configuring R0, R2 or R5.
+    bytes[at] = 0x76;
+    for (const auto standard : {VideoStandard::Ntsc, VideoStandard::Pal}) {
+        auto system = std::make_unique<EmulatorSystem>(image(bytes), standard, 48000);
+        while (system->completedFrames() < 2) step(*system);
+        const auto pixels = system->framePixels();
+        if (pixels[8].r != 255 || pixels[8].g || pixels[8].b ||
+            pixels[16].r || pixels[16].g || pixels[16].b != 255) {
+            std::cerr << "SMS startup background/sprite pixels missing\n";
+            return false;
+        }
+    }
+    return true;
+}
+
 bool interrupts() {
     auto system = std::make_unique<EmulatorSystem>(image(smsgg::test::stage5InputRom()), VideoStandard::Ntsc, 48000);
     // Stop on the first boundary with frame IRQ pending, before the next step can accept it.
-    while (system->tstates() < 193 * 228) step(*system);
+    while (system->tstates() < 193 * 228 - 16) step(*system);
     if (!system->cpu().halted() || !system->cpu().canAcceptMaskableInterrupt()) return false;
     const auto pc = system->cpu().registers().pc;
     const auto before = system->tstates();
@@ -86,7 +120,7 @@ bool interruptModes() {
         auto system = std::make_unique<EmulatorSystem>(image(std::move(bytes)), VideoStandard::Ntsc, 48000);
         unsigned count = 0;
         while (system->cpu().registers().pc != eiPc && count++ < 20000) step(*system);
-        if (system->cpu().registers().pc != eiPc || system->tstates() < 193 * 228
+        if (system->cpu().registers().pc != eiPc || system->tstates() < 193 * 228 - 16
             || system->cpu().iff1() || step(*system) != 4
             || system->cpu().canAcceptMaskableInterrupt()) return false;
         if (step(*system) != 4 || !system->cpu().halted()) return false;
@@ -243,6 +277,7 @@ int main(int argc, char** argv) {
     const std::string_view name = argc >= 2 ? argv[1] : "";
     const bool pass = name == "clock" ? clockProgression() : name == "interrupts" ? interrupts()
         : name == "interrupt_modes" ? interruptModes()
+        : name == "sms_boot_vdp" ? smsBootVdp()
         : name == "rom" ? rom(argc == 3 ? argv[2] : "") : name == "pause_indicator" ? pauseIndicator()
         : name == "sg1000" ? sg1000(argc == 3 ? argv[2] : "")
         : name == "prefix_error" && prefixError();

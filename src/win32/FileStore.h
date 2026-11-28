@@ -23,6 +23,7 @@ struct FileIo {
     decltype(&::FlushFileBuffers) flush{::FlushFileBuffers};
     decltype(&::CloseHandle) close{::CloseHandle};
 };
-std::variant<std::vector<uint8_t>,FileError> readFileExact(const std::filesystem::path& path,size_t expectedBytes,const FileIo& io={});
+std::variant<std::vector<uint8_t>,FileError> readFileExact(const std::filesystem::path& path,size_t expectedBytes,
+    const FileIo& io={},std::optional<size_t> alternateBytes={});
 std::optional<FileError> writeFileAtomically(const std::filesystem::path& path,std::span<const uint8_t> bytes,const FileIo& io={});
 }

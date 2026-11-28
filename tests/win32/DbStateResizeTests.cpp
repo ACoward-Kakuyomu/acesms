@@ -58,6 +58,7 @@ void conversion(const std::filesystem::path& dir,bool fm,FmInterpolation method,
     for(uint32_t rate:{44100u,96000u}) {
         EmulationSession saved(rom,dir/L"unused.sms",VideoStandard::Ntsc,rate,Machine::Sms,fm,method,backend);advance(saved.system());
         auto state=capture(saved.system());std::fill(state->cartridge.ram.begin(),state->cartridge.ram.end(),static_cast<uint8_t>(rate/1000));
+        if(rate==96000) {state->vdp.scrollX=8;state->vdp.nextScrollX=16;}
         const auto id=save(db,record.id,saved.profile(),*state);const auto original=read(db,record.id,id,saved.profile());
         auto p=saved.profile();p.ramBytes=newSize;state->cartridge.ram.resize(newSize,0);
         expected.push_back({id,p,encodeState(p,*state),original.createdAt,original.updatedAt});

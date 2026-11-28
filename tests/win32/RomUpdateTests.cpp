@@ -103,7 +103,7 @@ void fm(const std::filesystem::path& dir,const FmBackendPtr& external) {
     auto db=database(dir);const auto rom=image();auto cfg=settings();cfg.fmEnabled=true;auto record=add(db,rom,cfg);DbSramStore store(db,record);auto ram=std::get<std::vector<uint8_t>>(store.load());
     const auto builtin=FmBackendDefinition::builtin();const std::array<FmBackendPtr,2> backends{builtin,external};RomUpdateContext ctx{rom,48000,backends,builtin};
     const auto cp=checkpoint(db,record.id,cfg,builtin);auto next=cfg;next.fmPlugin=L"renamed.dll";
-    const auto base=stateFileBytes(cp.profile)-67-cp.profile.fm->backendBytes-FmResampler::stateBytes(cp.profile.fm->method);
+    const auto base=stateFileBytes(cp.profile,false)-67-cp.profile.fm->backendBytes-FmResampler::stateBytes(cp.profile.fm->method);
     for(size_t offset:{base+36,base+56,base+59}) {
         auto bad=cp.bytes;bad[offset]=0xff;bad[offset+1]=0xff;bad[offset+2]=0xff;bad[offset+3]=0xff;
         require(std::holds_alternative<StateCodecError>(inspectStateProfile(bad)),"invalid FM profile boundary");

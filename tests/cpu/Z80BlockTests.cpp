@@ -186,7 +186,7 @@ public:
     uint16_t port{};
     uint8_t data{};
     size_t memoryAccesses{};
-    uint8_t readPort(uint16_t address) override {
+    uint8_t readPort(uint16_t address, uint64_t) override {
         ++calls; write = false; port = address; data = reply;
         memoryAccesses = memory_.accesses.size(); return reply;
     }

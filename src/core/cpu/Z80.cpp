@@ -254,7 +254,8 @@ uint32_t Z80::executeBlock(uint8_t opcode, Z80Memory& memory, Z80Io* io, uint64_
         constexpr uint32_t transferTstates = 16;
         const bool output = (opcode & 1) != 0;
         const uint16_t oldPort = registers_.bc;
-        const uint8_t data = output ? memory.read8(registers_.hl) : io->readPort(oldPort);
+        // Input reads the port before the final three-T-state memory write.
+        const uint8_t data = output ? memory.read8(registers_.hl) : io->readPort(oldPort, startTstate + 13);
         registers_.setB(static_cast<uint8_t>(registers_.b() - 1));
         const uint16_t port = output ? registers_.bc : oldPort;
         // The repeat adds five T-states after the write cycle.
@@ -330,7 +331,7 @@ std::optional<uint32_t> Z80::executeEd(uint8_t opcode, Z80Memory* memory, Z80Io*
         if ((opcode & 1) != 0) {
             io->writePort(port, code == 6 ? 0 : readRegister8(code), startTstate + elapsed);
         } else {
-            const uint8_t value = io->readPort(port);
+            const uint8_t value = io->readPort(port, startTstate + elapsed);
             if (code != 6) writeRegister8(code, value);
             registers_.setF(static_cast<uint8_t>((registers_.f() & 1) | (value & 0xa8)
                 | (value == 0 ? 0x40 : 0) | (std::popcount(static_cast<unsigned>(value)) % 2 == 0 ? 4 : 0)));
@@ -510,7 +511,7 @@ std::optional<uint32_t> Z80::executeDecoded(uint8_t opcode, std::optional<uint8_
         const uint8_t a = registers_.a();
         const uint16_t port = static_cast<uint16_t>((a << 8) | *immediate);
         if (opcode == 0xdb) {
-            registers_.setA(io->readPort(port));
+            registers_.setA(io->readPort(port, startTstate + elapsed));
             memptr_ = static_cast<uint16_t>(port + 1);
         } else {
             io->writePort(port, a, startTstate + elapsed);

@@ -9,8 +9,16 @@
 namespace smsgg {
 namespace {
 constexpr std::array<uint8_t,8> magic{'A','C','E','S','M','S','S','T'};
-constexpr uint16_t stateVersion=1;
+constexpr uint16_t legacyStateVersion=1;
+constexpr uint16_t stateVersion=2;
 constexpr size_t cramHistoryBytes = 1 + maxCramChanges * 7; // count + (dot, index, RGBA)
+constexpr size_t vdpTrailerBytes = 2;
+bool matchesVersionSize(const StateProfile& profile, size_t bytes, uint16_t version) {
+    if (version == stateVersion) return bytes == stateFileBytes(profile);
+    // The R8 development build also saved an extended SMS layout under version 1.
+    return bytes == stateFileBytes(profile, false) ||
+        (profile.machine == Machine::Sms && bytes == stateFileBytes(profile));
+}
 uint8_t mapperId(MapperKind kind) {
     switch(kind) {case MapperKind::RomOnly:return 0;case MapperKind::Sega:return 1;case MapperKind::Codemasters:return 2;default:assert(false);return 255;}
 }
@@ -64,7 +72,7 @@ bool validValues(const EmulatorSystemState& s,const StateProfile& p) {
             || v.linePending || v.cramLatch || (v.spriteStatus & 0x80)
             || ((v.spriteStatus & 0x1f) && !(v.spriteStatus & 0x40))
             || g.lfsr > 0x7fff || g.stereo != 0xff || a.area.left != a.area.right) return false;
-    } else if (v.spriteStatus & ~0x60) return false;
+    } else if (v.spriteStatus & ~(0x60 | (p.machine == Machine::Sms ? VdpState::frameFlagDiff : 0))) return false;
     const unsigned scale=p.machine==Machine::Sms?85:17;
     auto color=[&](Rgba8 c){return c.a==255 && (sg1000 || (c.r%scale==0 && c.g%scale==0 && c.b%scale==0));};
     for(auto c:v.palette) if(!color(c)) return false;
@@ -101,7 +109,7 @@ std::variant<StateProfile,StateCodecError> inspectStateProfile(std::span<const u
     const auto machine=r.u8(),video=r.u8(),mapper=r.u8(),fm=r.u8();
     if(machine>static_cast<uint8_t>(Machine::Sg1000) || video>1 || mapper>2 || fm>1) return Error::Format;
     p.machine=static_cast<Machine>(machine);p.video=static_cast<VideoStandard>(video);p.mapper=static_cast<MapperKind>(mapper);
-    if (version != stateVersion) return Error::Format;
+    if (version != stateVersion && version != legacyStateVersion) return Error::Format;
     p.ramBytes=r.u32();p.sampleRate=r.u32();const auto length=r.u32();
     if((p.ramBytes!=0 && p.ramBytes!=8192 && p.ramBytes!=16384 && p.ramBytes!=32768) || !p.sampleRate || p.sampleRate>cpuClockHz(p.video) ||
         (p.machine == Machine::Sg1000 && !validSg1000Profile(p, fm != 0)) ||
@@ -112,8 +120,8 @@ std::variant<StateProfile,StateCodecError> inspectStateProfile(std::span<const u
         if(!supportsSegaRomSize(p.romBytes, p.machine)) return Error::Profile;
     } else if(p.romBytes<32768 || p.romBytes>1048576 || !std::has_single_bit(p.romBytes) ||
         p.ramBytes>8192) return Error::Profile;
-    const auto base=stateFileBytes(p);
-    if(bytes.size()<base || length!=bytes.size()-base) return Error::Size;
+    const auto base=stateFileBytes(p,false);
+    if(length>bytes.size() || !matchesVersionSize(p, bytes.size()-length,version)) return Error::Size;
     if(fm) {
         if(length<67) return Error::Size;
         r.at=base;FmStateProfile f;
@@ -123,16 +131,21 @@ std::variant<StateProfile,StateCodecError> inspectStateProfile(std::span<const u
         if(method>2 || f.resamplerVersion!=1 || f.clock!=3579545 || f.divider!=72 || !f.stateVersion || !f.backendBytes ||
             std::all_of(f.backendId.begin(),f.backendId.end(),[](auto b){return b==0;}) || std::all_of(f.compatibilityId.begin(),f.compatibilityId.end(),[](auto b){return b==0;})) return Error::Profile;
         f.method=static_cast<FmInterpolation>(method);p.fm=f;
-        if(resamplerBytes!=FmResampler::stateBytes(f.method) || bytes.size()!=stateFileBytes(p)) return Error::Size;
+        if(resamplerBytes!=FmResampler::stateBytes(f.method) || length!=fmBytes(p)) return Error::Size;
     } else if(length) return Error::Size;
     return p;
 }
-size_t stateFileBytes(const StateProfile& p) {
+size_t stateFileBytes(const StateProfile& p, bool withVdpTrailer) {
     return 42+418086+size_t(p.ramBytes)+(p.mapper==MapperKind::RomOnly?0:4)+fmBytes(p)
-        +(p.machine == Machine::Sms ? cramHistoryBytes : 0)+hasSecondPad(p.machine);
+        +(p.machine == Machine::Sms ? cramHistoryBytes : 0)+hasSecondPad(p.machine)
+        +(withVdpTrailer ? vdpTrailerBytes : 0);
+}
+bool supportsStateFileSize(const StateProfile& p, size_t bytes) {
+    return bytes==stateFileBytes(p) || bytes==stateFileBytes(p,false);
 }
 std::vector<uint8_t> encodeState(const StateProfile& p,const EmulatorSystemState& s) {
     assert(s.cartridge.ram.size()==p.ramBytes && s.audio.fm.has_value()==p.fm.has_value());
+    const auto& v=s.vdp;
     std::vector<uint8_t> bytes(stateFileBytes(p));Writer w{bytes};
     w.block(magic);w.u16(stateVersion);w.u32(static_cast<uint32_t>(bytes.size()-42));w.u32(0);w.u32(p.romBytes);w.u32(p.romCrc32);
     w.u8(static_cast<uint8_t>(p.machine));w.u8(p.video==VideoStandard::Ntsc?0:1);w.u8(mapperId(p.mapper));w.u8(p.fm.has_value());
@@ -148,7 +161,7 @@ std::vector<uint8_t> encodeState(const StateProfile& p,const EmulatorSystemState
     for(bool value:{pad.up,pad.down,pad.left,pad.right,pad.button1,pad.button2,pad.start}) w.u8(value);
     w.u8(s.controller.control);
     if(hasSecondPad(p.machine)) w.u8(digitalPadBits(s.controller.player2));
-    const auto& v=s.vdp;w.block(v.vram);w.u16(v.address);w.u8(v.code);w.u8(v.buffer);w.u8(v.secondByte);w.u16(v.line);w.u64(v.cycle);w.u64(v.frames);
+    w.block(v.vram);w.u16(v.address);w.u8(v.code);w.u8(v.buffer);w.u8(v.secondByte);w.u16(v.line);w.u64(v.cycle);w.u64(v.frames);
     w.u8(v.hLatch);w.block(v.registers);w.u8(v.framePending);w.u8(v.linePending);w.u8(v.lineCounter);
     auto color=[&](Rgba8 pixel){w.u8(pixel.r);w.u8(pixel.g);w.u8(pixel.b);w.u8(pixel.a);};
     for(auto pixel:v.palette) color(pixel);
@@ -175,16 +188,19 @@ std::vector<uint8_t> encodeState(const StateProfile& p,const EmulatorSystemState
         w.u8(interpolationId(f.method));w.u16(f.resamplerVersion);w.u32(f.backendBytes);w.u32(static_cast<uint32_t>(FmResampler::stateBytes(f.method)));
         w.block(a.fm->backend);const auto count=FmResampler::stateBytes(f.method);FmResampler::encodeState(a.fm->resampler,f.method,w.bytes.subspan(w.at,count));w.at+=count;
     }
+    w.u8(p.machine==Machine::Sms?v.scrollX:0);w.u8(p.machine==Machine::Sms?v.nextScrollX:0);
     assert(w.at==bytes.size());w.at=14;w.u32(checksum(bytes));return bytes;
 }
 namespace {
 std::variant<std::unique_ptr<EmulatorSystemState>,StateCodecError> decodeStateWithRate(
     std::span<const uint8_t> bytes, StateProfile& p, bool useSavedRate) {
     using Error=StateCodecError;
-    if(bytes.size()!=stateFileBytes(p)) return Error::Size;
+    if(bytes.size()<42) return Error::Size;
     Reader rd{bytes};const auto signature=rd.block(8);
     const auto version=rd.u16();
-    if(!std::equal(signature.begin(),signature.end(),magic.begin()) || version!=stateVersion) return Error::Format;
+    if(!std::equal(signature.begin(),signature.end(),magic.begin()) ||
+        (version!=stateVersion && version!=legacyStateVersion)) return Error::Format;
+    if(!matchesVersionSize(p,bytes.size(),version)) return Error::Size;
     const auto payload=rd.u32(),crc=rd.u32(),romBytes=rd.u32(),romCrc=rd.u32();
     const auto machine=rd.u8(),video=rd.u8(),mapper=rd.u8(),fm=rd.u8();const auto ram=rd.u32(),rate=rd.u32(),fmLength=rd.u32();
     if(machine>static_cast<uint8_t>(Machine::Sg1000) || video>1 || mapper>2 || fm>1) return Error::Format;
@@ -241,6 +257,12 @@ std::variant<std::unique_ptr<EmulatorSystemState>,StateCodecError> decodeStateWi
         const auto backend=rd.block(f.backendBytes);const auto converted=FmResampler::decodeState(rd.block(resamplerLength),f.clock,p.sampleRate,f.method,ticks);
         if(!converted) return Error::Value;
         a.fm=FmAudioState{{backend.begin(),backend.end()},*converted};
+    }
+    if (bytes.size()==stateFileBytes(p)) {
+        v.scrollX=rd.u8();v.nextScrollX=rd.u8();
+        if(p.machine!=Machine::Sms && (v.scrollX || v.nextScrollX)) return Error::Value;
+    } else if(p.machine==Machine::Sms) {
+        v.scrollX=v.nextScrollX=v.registers[8];
     }
     assert(rd.at==bytes.size());return state;
 }

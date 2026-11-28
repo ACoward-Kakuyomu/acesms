@@ -1,7 +1,8 @@
 #include "core/bus/SmsIo.h"
+#include "core/video/Vdp.h"
 
 namespace smsgg {
-uint8_t SmsIo::readPort(uint16_t port) {
+uint8_t SmsIo::readPort(uint16_t port, uint64_t) {
     if(fmEnabled_ && port==0xf2) return audio_.readFmControl();
     if (machine_ == Machine::GameGear) {
         if (port == 0) return controller_.startPressed() ? 0x40 : 0xc0;
@@ -19,11 +20,17 @@ uint8_t SmsIo::readPort(uint16_t port) {
     return 0xff;
 }
 
-void SmsIo::writePort(uint16_t port, uint8_t value, uint64_t) {
+void SmsIo::writePort(uint16_t port, uint8_t value, uint64_t tstate) {
     if(fmEnabled_ && (port==0xf0 || port==0xf1)) audio_.writeFm(static_cast<uint8_t>(port&1),value);
     else if(fmEnabled_ && port==0xf2) audio_.writeFmControl(value);
     else if (machine_ == Machine::GameGear && port == 6) audio_.writeStereo(value);
-    else if (port == 0x3f) controller_.writeControl(value);
+    else if (port == 0x3f) {
+        const bool thRose = controller_.writeControl(value);
+        if (machine_ == Machine::Sms && thRose) {
+            vdp_.advanceTo(tstate);
+            vdp_.latchHCounter();
+        }
+    }
     else if (port == 0x7f) audio_.writePsg(value);
 }
 } // namespace smsgg

@@ -112,16 +112,38 @@ bool format() {
     const Case c{Machine::Sms,VideoStandard::Ntsc,MapperKind::RomOnly,48000,false,FmInterpolation::Sinc};const auto rom=image(c.mapper);const auto p=profile(rom,c,{});
     auto system=make(rom,c,{});auto state=std::make_unique<EmulatorSystemState>();system->captureState(*state);
     const auto bytes=encodeState(p,*state);auto independent=bytes;crc(independent);
-    if(!(stateFileBytes(p)==418277 && bytes.size()==418277 && std::string_view(reinterpret_cast<const char*>(bytes.data()),8)=="ACESMSST" &&
-        get(bytes,8,2)==1 && get(bytes,10,4)==418235 && get(bytes,18,4)==8192 && get(bytes,22,4)==rom.metadata().crc32 &&
+    if(!(stateFileBytes(p)==418279 && bytes.size()==418279 && std::string_view(reinterpret_cast<const char*>(bytes.data()),8)=="ACESMSST" &&
+        get(bytes,8,2)==2 && get(bytes,10,4)==418237 && get(bytes,18,4)==8192 && get(bytes,22,4)==rom.metadata().crc32 &&
         get(bytes,26,4)==0 && get(bytes,30,4)==0 && get(bytes,34,4)==48000 && get(bytes,38,4)==0 &&
         get(bytes,70,2)==0xdff8 && bytes[8277]==1 && bytes[8278]==1 && bytes[8287]==0xff && independent==bytes)) return false;
+    auto withScroll = bytes;
+    withScroll[withScroll.size()-2]=0x12;withScroll.back()=0x34;
+    set(withScroll,8,1,2);
+    crc(withScroll);
+    auto scrollState = decodeState(withScroll, p);
+    const auto* scroll = std::get_if<std::unique_ptr<EmulatorSystemState>>(&scrollState);
+    auto updatedScroll = withScroll;
+    set(updatedScroll,8,2,2);crc(updatedScroll);
+    if (!std::holds_alternative<StateProfile>(inspectStateProfile(withScroll)) ||
+        !scroll || encodeState(p, **scroll) != updatedScroll) return false;
     state->controller.player2={.down=true,.left=true,.button2=true};
+    state->vdp.registers[8]=state->vdp.scrollX=state->vdp.nextScrollX=0x35;
     auto withPlayer2=encodeState(p,*state);
-    if(withPlayer2[8288]!=0x26) return false;
+    if(withPlayer2[8288]!=0x26 || withPlayer2.size()!=bytes.size()) return false;
     auto decoded=decodeState(withPlayer2,p);
     const auto* current=std::get_if<std::unique_ptr<EmulatorSystemState>>(&decoded);
-    if(!current || encodeState(p,**current)!=withPlayer2) return false;
+    if(!current || (*current)->vdp.scrollX!=0x35 || (*current)->vdp.nextScrollX!=0x35 ||
+        encodeState(p,**current)!=withPlayer2) return false;
+    auto legacy=withPlayer2;
+    legacy.resize(legacy.size()-2);
+    set(legacy,8,1,2);set(legacy,10,legacy.size()-42,4);crc(legacy);
+    auto legacyState=decodeState(legacy,p);
+    const auto* old=std::get_if<std::unique_ptr<EmulatorSystemState>>(&legacyState);
+    if(!std::holds_alternative<StateProfile>(inspectStateProfile(legacy)) ||
+        !old || encodeState(p,**old)!=withPlayer2) return false;
+    set(legacy,8,2,2);crc(legacy);
+    if(!std::holds_alternative<StateCodecError>(inspectStateProfile(legacy)) ||
+        !std::holds_alternative<StateCodecError>(decodeState(legacy,p))) return false;
     auto previous=withPlayer2;
     set(previous,8,3,2);set(previous,10,previous.size()-42,4);crc(previous);
     decoded=decodeState(previous,p);
@@ -141,7 +163,7 @@ bool format() {
     uint8_t id=0;
     for(auto method:{FmInterpolation::Sinc,FmInterpolation::ZohLowPass,FmInterpolation::Linear}) {
         auto selected=c;selected.fm=true;selected.method=method;const auto expected=profile(rom,selected,{});auto fmSystem=make(rom,selected,{});fmSystem->captureState(*state);
-        const auto file=encodeState(expected,*state);if(file[file.size()-get(file,38,4)+56]!=id++) return false;
+        const auto file=encodeState(expected,*state);if(file[file.size()-2-get(file,38,4)+56]!=id++) return false;
     }
     return true;
 }
@@ -261,7 +283,7 @@ bool reject(const FmBackendPtr& backend) {
        !invalid([](auto& s){++s.audio.clock.phase;}) || !invalid([](auto& s){++s.audio.interval;}) ||
        !invalid([](auto& s){s.audio.area.left=std::numeric_limits<double>::infinity();}) || !invalid([](auto& s){s.audio.area.right=1e100;}) ||
        !invalid([](auto& s){s.audio.fmControl=4;})) return false;
-    const auto fm=original.size()-get(original,38,4);
+    const auto fm=original.size()-2-get(original,38,4);
     const auto history = fm - 148;
     bad = original; bad[history] = 22; crc(bad);
     if (!error(bad, StateCodecError::Value)) return false;
@@ -292,7 +314,8 @@ bool sg1000() {
     auto state = std::make_unique<EmulatorSystemState>();
     source->captureState(*state);
     const auto blob = encodeState(p, *state);
-    if (get(blob, 8, 2) != 1 || get(blob, 26, 1) != 2 || state->vdp.spriteStatus != 0x64 || blob[8288]!=0x26) return false;
+    if (get(blob, 8, 2) != 2 || get(blob, 26, 1) != 2 || state->vdp.spriteStatus != 0x64 ||
+        blob[8288]!=0x26 || get(blob,blob.size()-2,2)!=0) return false;
     const auto info = inspectStateProfile(blob);
     const auto* inspected = std::get_if<StateProfile>(&info);
     if (!inspected || inspected->machine != Machine::Sg1000 || inspected->romBytes != 40960 || inspected->fm) return false;
@@ -310,6 +333,10 @@ bool sg1000() {
     other.machine = Machine::Sms;
     if (!error(blob, other, StateCodecError::Size)) return false;
     auto old=blob;
+    old.resize(old.size()-2);
+    set(old,10,old.size()-42,4);crc(old);
+    if(!error(old,p,StateCodecError::Size) ||
+        !std::holds_alternative<StateCodecError>(inspectStateProfile(old))) return false;
     old.erase(old.begin()+8288);
     set(old,8,1,2);set(old,10,old.size()-42,4);crc(old);
     if(!error(old,p,StateCodecError::Size) || !std::holds_alternative<StateCodecError>(inspectStateProfile(old))) return false;
@@ -324,6 +351,8 @@ bool sg1000() {
     other = p;
     other.video = VideoStandard::Pal;
     if (!error(bad, other, StateCodecError::Profile)) return false;
+    bad=blob;bad.back()=1;crc(bad);
+    if(!error(bad,p,StateCodecError::Value)) return false;
     state->audio.psg.lfsr |= 0x8000;
     return error(encodeState(p, *state), p, StateCodecError::Value);
 }

@@ -157,7 +157,7 @@ std::variant<StateChanges,DatabaseError> prepareStateChanges(sqlite3* db,const R
     auto states=prepare(db,"SELECT state_id,data FROM states WHERE rom_id=?1 ORDER BY state_id");
     if(auto* error=std::get_if<DatabaseError>(&states)) return *error;
     auto* row=std::get<Statement>(states).get();auto code=sqlite3_bind_int64(row,1,before.id);if(code!=SQLITE_OK) return sqlError(db,code);
-    const auto minimumBytes=stateFileBytes({.machine=Machine::GameGear,.mapper=MapperKind::RomOnly});
+    const auto minimumBytes=stateFileBytes({.machine=Machine::GameGear,.mapper=MapperKind::RomOnly},false);
     while((code=sqlite3_step(row))==SQLITE_ROW) {
         if(sqlite3_column_type(row,1)!=SQLITE_BLOB) return invalidRow();
         const auto size=static_cast<size_t>(sqlite3_column_bytes(row,1));
@@ -280,16 +280,16 @@ std::variant<RomDatabase,DatabaseError> RomDatabase::open(const std::filesystem:
         const auto reject=[&] {
             const auto* filename=sqlite3_db_filename(handle,"main");
             const auto reason="Unsupported database schema version "+std::to_string(versionNumber)+
-                " (expected a supported version 1 or 2 schema)";
+                " (expected a supported version 1, 2, or 3 schema)";
             return DatabaseError{DatabaseErrorKind::UnsupportedVersion,SQLITE_OK,
                 filename && *filename?std::string(filename)+": "+reason:reason};
         };
-        if(versionNumber!=1 && versionNumber!=2) return reject();
+        if(versionNumber<1 || versionNumber>3) return reject();
         auto required=integer(handle,"SELECT count(*) FROM sqlite_schema WHERE type='table' AND "
             "name IN('roms','rom_settings','sram','states','app_settings','app_controllers','cheats')");
         if(const auto* error=std::get_if<DatabaseError>(&required)) return *error;
         if(std::get<int>(required)!=7) return reject();
-        if(versionNumber==2) {
+        if(versionNumber>=2) {
             auto shortcuts=integer(handle,"SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='app_shortcuts'");
             if(const auto* error=std::get_if<DatabaseError>(&shortcuts)) return *error;
             if(std::get<int>(shortcuts)!=1) return reject();
@@ -310,8 +310,8 @@ std::variant<RomDatabase,DatabaseError> RomDatabase::open(const std::filesystem:
             "save INTEGER NOT NULL,load INTEGER NOT NULL,previous INTEGER NOT NULL,next INTEGER NOT NULL,"
             "fast_forward INTEGER NOT NULL,fullscreen INTEGER NOT NULL) STRICT;")) return *error;
         if(auto error=writeShortcuts(handle,bindings)) return *error;
-        if(auto error=db.execute("PRAGMA user_version=2")) return *error;
     }
+    if(versionNumber<3) if(auto error=db.execute("PRAGMA user_version=3")) return *error;
     if(auto error=db.execute("COMMIT")) return *error;
     return db;
 }
@@ -623,11 +623,10 @@ std::optional<DatabaseError> RomDatabase::resizeSram(int64_t romId,size_t oldByt
         if(auto* error=std::get_if<DatabaseError>(&states)) return *error;
         auto* row=std::get<Statement>(states).get();
         code=sqlite3_bind_int64(row,1,romId);if(code!=SQLITE_OK) return sqlError(db_,code);
-        const auto expectedSize=stateFileBytes(context->profile);
         while((code=sqlite3_step(row))==SQLITE_ROW) {
             if(sqlite3_column_type(row,1)!=SQLITE_BLOB) return invalidRow();
             const auto size=static_cast<size_t>(sqlite3_column_bytes(row,1));
-            if(size!=expectedSize) return invalidRow();
+            if(!supportsStateFileSize(context->profile,size)) return invalidRow();
             const auto* data=static_cast<const uint8_t*>(sqlite3_column_blob(row,1));if(!data) return sqlError(db_,SQLITE_NOMEM);
             auto bytes=convertStateRam(std::span(data,size),*context,target,static_cast<uint32_t>(next.size()));
             if(auto* error=std::get_if<DatabaseError>(&bytes)) return *error;
@@ -789,9 +788,8 @@ std::variant<SavedState,DatabaseError,StateCodecError> RomDatabase::readState(in
     code=sqlite3_step(s);
     if(code==SQLITE_DONE) return missingState();
     if(code!=SQLITE_ROW) return sqlError(db_,code);
-    const auto expectedSize=stateFileBytes(profile);
     const auto size=sqlite3_column_type(s,3)==SQLITE_BLOB?static_cast<size_t>(sqlite3_column_bytes(s,3)):0;
-    if(size!=expectedSize)
+    if(!supportsStateFileSize(profile,size))
         return DatabaseError{DatabaseErrorKind::InvalidData,SQLITE_OK,"Invalid state row or size"};
     auto metadata=readStateSummary(db_,s,stateId);
     if(auto* error=std::get_if<DatabaseError>(&metadata)) return *error;

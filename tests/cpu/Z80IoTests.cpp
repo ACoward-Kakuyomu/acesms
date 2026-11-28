@@ -13,11 +13,11 @@ namespace {
 
 class Io final : public smsgg::Z80Io {
 public:
-    struct Access { bool write; uint16_t port; uint8_t value; };
+    struct Access { bool write; uint16_t port; uint8_t value; uint64_t tstate{}; };
     uint8_t reply{};
     std::vector<Access> accesses;
-    uint8_t readPort(uint16_t port) override {
-        accesses.push_back({false, port, reply});
+    uint8_t readPort(uint16_t port, uint64_t tstate) override {
+        accesses.push_back({false, port, reply, tstate});
         return reply;
     }
     void writePort(uint16_t port, uint8_t value, uint64_t) override { accesses.push_back({true, port, value}); }
@@ -147,11 +147,36 @@ bool missing() {
         && enabled.canAcceptMaskableInterrupt();
 }
 
+bool readTiming() {
+    constexpr uint64_t start = 0x100000000ull + 123;
+    Io io;
+    Memory memory;
+    const auto readAt = [&](Z80& cpu, std::initializer_list<uint8_t> bytes, uint32_t offset, uint32_t total) {
+        io.accesses.clear();
+        return cpu.executeInstruction({bytes.begin(), bytes.size()}, &memory, &io, start) == total
+            && io.accesses.size() == 1 && !io.accesses[0].write && io.accesses[0].tstate == start + offset;
+    };
+    Z80 cpu(initialRegisters());
+    if (!readAt(cpu, {0xdb, 0x7e}, 11, 11) || !readAt(cpu, {0xdd, 0xdb, 0x7e}, 15, 15)
+        || !readAt(cpu, {0xed, 0x78}, 12, 12) || !readAt(cpu, {0xfd, 0xed, 0x78}, 16, 16)) return false;
+    for (const uint8_t opcode : {0xa2, 0xaa}) {
+        Z80 block({.bc = 0x027e, .hl = 0xc000});
+        if (!readAt(block, {0xed, opcode}, 13, 16)) return false;
+    }
+    for (const uint8_t opcode : {0xb2, 0xba}) {
+        Z80 block({.bc = 0x027e, .hl = 0xc000});
+        if (!readAt(block, {0xdd, 0xfd, 0xed, opcode}, 21, 29)
+            || !readAt(block, {0xed, opcode}, 13, 16)) return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
     if (argc == 2) {
         const std::string_view name(argv[1]);
+        if (name == "read_timing") return readTiming() ? 0 : 1;
         if (name == "register_in") return registers(false) ? 0 : 1;
         if (name == "register_out") return registers(true) ? 0 : 1;
         const bool passed = name == "immediate_in" ? immediate(false) : name == "immediate_out" ? immediate(true)

@@ -19,8 +19,8 @@ public:
 class Z80Io {
 public:
     virtual ~Z80Io() = default;
-    virtual uint8_t readPort(uint16_t port) = 0;
-    // Absolute T-state at the end of the CPU's I/O write cycle.
+    // Absolute T-state at the end of the CPU's I/O cycle.
+    virtual uint8_t readPort(uint16_t port, uint64_t tstate) = 0;
     virtual void writePort(uint16_t port, uint8_t value, uint64_t tstate) = 0;
 };
 

@@ -65,7 +65,9 @@ void roundtrip(const std::filesystem::path& dir,const FmBackendPtr& backend) {
             require(first.id==id && first.name==L"\u65e5\u672c\u8a9e ' ; --" && first.createdAt>0 && first.updatedAt>0,"metadata");
             expected=encodeState(session.profile(),*state);require(blob(db,id)==expected,"existing codec bytes");
             require(save(db,romId,session.profile(),*state)!=id,"multiple same name/time");
-            state->cartridge.ram[17]=0xa7;require(save(db,romId,session.profile(),*state,id)==id,"overwrite ID");
+            state->cartridge.ram[17]=0xa7;
+            state->vdp.scrollX=8;state->vdp.nextScrollX=16;
+            require(save(db,romId,session.profile(),*state,id)==id,"overwrite ID");
             auto updated=read(db,romId,id,session.profile());require(updated.createdAt==first.createdAt,"creation time preserved");
             expected=encodeState(session.profile(),*state);require(blob(db,id)==expected,"overwrite bytes");
             require(!sram.save(std::vector<uint8_t>(8192)),"baseline unchanged");

@@ -22,7 +22,7 @@ struct ControllerState {
 class Controller final {
 public:
     void setState(PadState state, PadState player2 = {}) { state_ = state; player2_ = player2; }
-    void writeControl(uint8_t value) { control_ = value; }
+    bool writeControl(uint8_t value); // Returns true if either TH pin rose.
     uint8_t readDc(bool smsControl = true) const;
     uint8_t readDd(bool smsControl = true) const;
     bool startPressed() const { return state_.start; }
@@ -30,6 +30,7 @@ public:
     void restoreState(const ControllerState& state) noexcept { setState(state.pad,state.player2);control_=state.control; }
 private:
     bool pinLevel(unsigned pin, bool input) const;
+    uint8_t thLevels() const;
     PadState state_{};
     PadState player2_{};
     uint8_t control_{0xff};

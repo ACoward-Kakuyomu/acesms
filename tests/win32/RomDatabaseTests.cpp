@@ -41,7 +41,7 @@ void opening(const std::filesystem::path& dir) {
     require(std::string_view(sqlite3_sourceid())=="2026-10-16 14:45:20 555e07ef33f69a0957d24d8e555b702464a131d6f1607f4c3c1e4551e8e6ca76","fixed source ID");
     const auto path=fresh(dir,L"\u65e5\u672c\u8a9e.sqlite3");
     {
-        auto db=open(path);require(scalar(db.nativeHandle(),"PRAGMA user_version")==2,"new version");
+        auto db=open(path);require(scalar(db.nativeHandle(),"PRAGMA user_version")==3,"new version");
         require(scalar(db.nativeHandle(),"PRAGMA foreign_keys")==1,"FK enabled");
         require(scalar(db.nativeHandle(),"SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'")==8,"ROM, SRAM, state, application settings, shortcuts and cheat tables");
         const auto defaults=std::get<AppSettings>(db.readAppSettings());
@@ -83,7 +83,7 @@ void schema(const std::filesystem::path& dir) {
     {
         auto db=open(versionOne);
         auto settings=std::get<AppSettings>(db.readAppSettings());
-        require(scalar(db.nativeHandle(),"PRAGMA user_version")==2 &&
+        require(scalar(db.nativeHandle(),"PRAGMA user_version")==3 &&
             (*settings.controllers)[0].buttons==std::array<unsigned,4>{256,512,64,32768} &&
             settings.shortcuts==ShortcutBindings{0,0,leftTriggerButton,rightTriggerButton,0,128},
             "preserve game bindings and drop only conflicting shortcut defaults");
@@ -93,6 +93,19 @@ void schema(const std::filesystem::path& dir) {
     {
         auto db=open(versionOne);
         require(std::get<AppSettings>(db.readAppSettings()).shortcuts[2]==0,"explicit unassigned persisted");
+    }
+    const auto versionTwo=fresh(dir,L"public-v2.sqlite3");
+    std::filesystem::copy_file(versionOne,versionTwo);
+    {
+        auto db=raw(versionTwo);
+        sql(db.get(),"PRAGMA user_version=2; UPDATE app_settings SET aspect=1; UPDATE app_shortcuts SET save=4096");
+    }
+    for(int i=0;i<2;++i) {
+        auto db=open(versionTwo);
+        const auto settings=std::get<AppSettings>(db.readAppSettings());
+        require(scalar(db.nativeHandle(),"PRAGMA user_version")==3 &&
+            settings.fourThree && settings.shortcuts[0]==4096 && settings.shortcuts[2]==0,
+            "version 2 database upgrade or reopen lost settings");
     }
     const auto collision=fresh(dir,L"migration-fails.sqlite3");
     std::filesystem::copy_file(versionOne,collision);
@@ -154,16 +167,19 @@ void failures(const std::filesystem::path& dir) {
     require(code==SQLITE_READONLY || code==SQLITE_CANTOPEN,"read-only error code");
 }
 void commit(const std::filesystem::path& dir) {
-    const auto path=fresh(dir,L"commit.sqlite3");
-    {auto seed=raw(path);sql(seed.get(),"PRAGMA user_version=0");}
-    const auto previous=bytes(path);
-    auto reader=raw(path);sql(reader.get(),"BEGIN;SELECT * FROM sqlite_schema");
-    const auto failed=RomDatabase::open(path);
-    require(std::holds_alternative<DatabaseError>(failed) && std::get<DatabaseError>(failed).code==SQLITE_BUSY,"commit failure missing");
-    sql(reader.get(),"ROLLBACK");reader.reset();
-    require(bytes(path)==previous,"failed init changed bytes");
-    {auto check=raw(path);require(scalar(check.get(),"PRAGMA user_version")==0,"failed commit advanced version");}
-    {auto db=open(path);require(scalar(db.nativeHandle(),"PRAGMA user_version")==2,"retry after explicit release");}
+    for(const int start:{0,2}) {
+        const auto path=fresh(dir,L"commit.sqlite3");
+        if(start==2) {auto db=open(path);}
+        {auto seed=raw(path);sql(seed.get(),start==0?"PRAGMA user_version=0":"PRAGMA user_version=2");}
+        const auto previous=bytes(path);
+        auto reader=raw(path);sql(reader.get(),"BEGIN;SELECT * FROM sqlite_schema");
+        const auto failed=RomDatabase::open(path);
+        require(std::holds_alternative<DatabaseError>(failed) && std::get<DatabaseError>(failed).code==SQLITE_BUSY,"commit failure missing");
+        sql(reader.get(),"ROLLBACK");reader.reset();
+        require(bytes(path)==previous,"failed init or migration changed bytes");
+        {auto check=raw(path);require(scalar(check.get(),"PRAGMA user_version")==start,"failed commit advanced version");}
+        {auto db=open(path);require(scalar(db.nativeHandle(),"PRAGMA user_version")==3,"retry after explicit release");}
+    }
 }
 void cheats(const std::filesystem::path& dir) {
     const auto path=fresh(dir,L"cheats.sqlite3");

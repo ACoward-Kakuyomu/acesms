@@ -4,6 +4,30 @@
 
 namespace smsgg {
 namespace {
+bool isMode192(std::span<const uint8_t, 11> registers) {
+    const unsigned mode = (registers[1] >> 3) & 3;
+    return (registers[0] & 4) != 0
+        && ((registers[0] & 2) != 0 ? mode == 0 || mode == 3 : (registers[1] & 0x10) == 0);
+}
+
+template<class Visit>
+bool visitSprites(std::span<const uint8_t, 0x4000> vram, std::span<const uint8_t, 11> registers,
+    unsigned line, Visit visit) {
+    const unsigned sat = (registers[5] & 0x7e) << 7;
+    const unsigned zoom = (registers[1] & 1) != 0 ? 2 : 1;
+    const unsigned height = ((registers[1] & 2) != 0 ? 16u : 8u) * zoom;
+    unsigned selected = 0;
+    for (unsigned i = 0; i < 64; ++i) {
+        const unsigned y = vram[sat + i];
+        if (y == 0xd0) break;
+        const unsigned dy = (line - ((y + 1) & 255)) & 255;
+        if (dy >= height) continue;
+        if (selected++ == 8) return true;
+        visit(sat + 0x80 + i * 2, dy / zoom, zoom);
+    }
+    return false;
+}
+
 unsigned patternPixel(std::span<const uint8_t, 0x4000> vram, unsigned index, unsigned row, unsigned column) {
     const unsigned address = index * 32 + row * 4;
     unsigned pixel = 0;
@@ -12,17 +36,14 @@ unsigned patternPixel(std::span<const uint8_t, 0x4000> vram, unsigned index, uns
 }
 template<class Pixel>
 uint8_t composeLine(std::span<const uint8_t, 0x4000> vram, std::span<const Pixel, 32> palette,
-    std::span<const uint8_t, 11> registers, uint8_t scrollY, unsigned line, std::span<Pixel, 256> output) {
+    std::span<const uint8_t, 11> registers, unsigned scrollX, uint8_t scrollY, unsigned line, std::span<Pixel, 256> output) {
     const auto backdrop = palette[16 + (registers[7] & 15)];
-    const unsigned mode = (registers[1] >> 3) & 3;
-    const bool mode192 = (registers[0] & 4) != 0
-        && ((registers[0] & 2) != 0 ? mode == 0 || mode == 3 : (registers[1] & 0x10) == 0);
-    if (!mode192 || (registers[1] & 0x40) == 0) {
+    if (!isMode192(registers) || (registers[1] & 0x40) == 0) {
         std::fill(output.begin(), output.end(), backdrop);
         return 0;
     }
     const unsigned base = (registers[2] & 0x0e) << 10;
-    const unsigned scrollX = (registers[0] & 0x40) != 0 && line < 16 ? 0 : registers[8];
+    if ((registers[0] & 0x40) != 0 && line < 16) scrollX = 0;
     std::array<bool, 256> backgroundPriority{};
     for (unsigned x = 0; x < 256; ++x) {
         if (x < (scrollX & 7) || ((registers[0] & 0x20) != 0 && x < 8)) { output[x] = backdrop; continue; }
@@ -36,21 +57,11 @@ uint8_t composeLine(std::span<const uint8_t, 0x4000> vram, std::span<const Pixel
         backgroundPriority[x] = (word & 0x1000) != 0 && pixel != 0;
         output[x] = palette[((word & 0x800) != 0 ? 16 : 0) + pixel];
     }
-    const unsigned sat = (registers[5] & 0x7e) << 7;
-    const unsigned zoom = (registers[1] & 1) != 0 ? 2 : 1;
     const bool large = (registers[1] & 2) != 0;
-    unsigned selected = 0;
     uint8_t flags = 0;
     std::array<bool, 256> spriteSeen{};
-    for (unsigned i = 0; i < 64; ++i) {
-        const unsigned y = vram[sat + i];
-        if (y == 0xd0) break;
-        const unsigned dy = (line - ((y + 1) & 255)) & 255;
-        if (dy >= (large ? 16u : 8u) * zoom) continue;
-        if (selected++ == 8) { flags |= 0x40; break; }
-        const unsigned attributes = sat + 0x80 + i * 2;
+    const bool overflow = visitSprites(vram, registers, line, [&](unsigned attributes, unsigned row, unsigned zoom) {
         const int left = int(vram[attributes]) - ((registers[0] & 8) != 0 ? 8 : 0);
-        const unsigned row = dy / zoom;
         const unsigned index = (large ? vram[attributes + 1] & 0xfe : vram[attributes + 1])
             + ((registers[6] & 4) != 0 ? 256 : 0) + row / 8;
         for (unsigned offset = 0; offset < 8 * zoom; ++offset) {
@@ -65,15 +76,20 @@ uint8_t composeLine(std::span<const uint8_t, 0x4000> vram, std::span<const Pixel
                 }
             }
         }
-    }
-    return flags;
+    });
+    return flags | (overflow ? 0x40 : 0);
 }
 } // namespace
 
+bool Mode4Renderer::spriteOverflow(std::span<const uint8_t, 0x4000> vram, std::span<const uint8_t, 11> registers,
+    unsigned line) {
+    return isMode192(registers) && visitSprites(vram, registers, line, [](unsigned, unsigned, unsigned) {});
+}
+
 uint8_t Mode4Renderer::renderLine(std::span<const uint8_t, 0x4000> vram, std::span<const Rgba8, 32> palette,
-    std::span<const uint8_t, 11> registers, uint8_t scrollY, unsigned line, std::span<Rgba8, 256> output,
+    std::span<const uint8_t, 11> registers, uint8_t scrollX, uint8_t scrollY, unsigned line, std::span<Rgba8, 256> output,
     std::span<const CramChange> changes) {
-    if (changes.empty()) return composeLine(vram, palette, registers, scrollY, line, output);
+    if (changes.empty()) return composeLine(vram, palette, registers, scrollX, scrollY, line, output);
 
     constexpr auto identity = [] {
         std::array<uint8_t, 32> entries{};
@@ -81,7 +97,7 @@ uint8_t Mode4Renderer::renderLine(std::span<const uint8_t, 0x4000> vram, std::sp
         return entries;
     }();
     std::array<uint8_t, 256> indices;
-    const auto flags = composeLine<uint8_t>(vram, identity, registers, scrollY, line, indices);
+    const auto flags = composeLine<uint8_t>(vram, identity, registers, scrollX, scrollY, line, indices);
 
     // Resolve each span with the palette visible there, rolling changes back from the right edge.
     std::array<Rgba8, 32> colors;

@@ -56,7 +56,8 @@ bool ports() {
 bool inputs() {
     smsgg::Controller controller;
     smsgg::AudioMixer audio(3579545,48000);
-    smsgg::SmsIo terminal(controller,audio,smsgg::Machine::GameGear);
+    smsgg::Vdp vdp(smsgg::VideoStandard::Ntsc,smsgg::Machine::GameGear);
+    smsgg::SmsIo terminal(controller,audio,vdp,smsgg::Machine::GameGear);
     smsgg::test::Memory external;external.bytes[0x4000]=0xa5;
     smsgg::MemoryBus memory(external);
     smsgg::MemoryControl control(memory,terminal,smsgg::Machine::GameGear);

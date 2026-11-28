@@ -182,7 +182,7 @@ public:
     uint16_t port{};
     uint8_t data{};
     uint64_t writeTstate{};
-    uint8_t readPort(uint16_t address) override { ++calls; port = address; data = 0x11; return data; }
+    uint8_t readPort(uint16_t address, uint64_t) override { ++calls; port = address; data = 0x11; return data; }
     void writePort(uint16_t address, uint8_t value, uint64_t tstate) override {
         ++calls; port = address; data = value; writeTstate = tstate;
     }

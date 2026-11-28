@@ -38,7 +38,8 @@ std::optional<SessionError> EmulationSession::saveState(const std::filesystem::p
     if(auto error=writeFileAtomically(path,encodeState(profile_,*state))) return SessionError{*error};return std::nullopt;
 }
 std::variant<std::unique_ptr<EmulatorSystem>,SessionError> EmulationSession::prepareState(const std::filesystem::path& path) const {
-    auto bytes=readFileExact(path,stateFileBytes(profile_));if(const auto* error=std::get_if<FileError>(&bytes)) return SessionError{*error};
+    auto bytes=readFileExact(path,stateFileBytes(profile_),{},stateFileBytes(profile_,false));
+    if(const auto* error=std::get_if<FileError>(&bytes)) return SessionError{*error};
     auto decoded=decodeState(std::get<std::vector<uint8_t>>(bytes),profile_);if(const auto* error=std::get_if<StateCodecError>(&decoded)) return SessionError{*error};
     return prepareState(*std::get<std::unique_ptr<EmulatorSystemState>>(decoded));
 }

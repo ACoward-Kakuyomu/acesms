@@ -3,6 +3,7 @@
 #include "core/bus/IoBus.h"
 #include "core/bus/MemoryControl.h"
 #include "core/bus/SmsIo.h"
+#include "core/video/Vdp.h"
 #include "../cpu/Z80MemoryTestSupport.h"
 
 #include <array>
@@ -93,7 +94,8 @@ bool bus() {
     MemoryBus memory(cartridge);
     Controller controller;
     AudioMixer audio(3579545,48000,true);
-    SmsIo terminal(controller,audio,Machine::Sms,true);
+    Vdp vdp(VideoStandard::Ntsc);
+    SmsIo terminal(controller,audio,vdp,Machine::Sms,true);
     MemoryControl control(memory,terminal);
     IoBus io(control,Machine::Sms,true);
     io.writePort(0x3e,4);

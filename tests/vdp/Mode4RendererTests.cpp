@@ -174,7 +174,7 @@ bool scroll() {
     // Fixed boundary vectors independent of the scroll expectation function.
     reg(*vdp, 0, 6); reg(*vdp, 8, 1); reg(*vdp, 9, 0); advance(*vdp, time += 59736 * 2);
     if (!pixel(*vdp, 0, 0, color(31)) || !pixel(*vdp, 1, 0, color(1))) return false;
-    reg(*vdp, 8, 8); advance(*vdp, time += 59736);
+    reg(*vdp, 8, 8); advance(*vdp, time += 59736 * 2);
     return pixel(*vdp, 0, 0, color(4)) && pixel(*vdp, 8, 0, color(1));
 }
 bool scrollLatches() {
@@ -183,11 +183,44 @@ bool scrollLatches() {
     reg(*vdp, 8, 8); reg(*vdp, 9, 8);
     advance(*vdp, 59736);
     for (unsigned y = 0; y < 192; ++y) for (unsigned x = 0; x < 256; ++x) {
-        if (!pixel(*vdp, x, y, scrolledPixel(x, y, y < 96 ? 0 : 8, 0, 0))) return false;
+        if (!pixel(*vdp, x, y, scrolledPixel(x, y, y <= 96 ? 0 : 8, 0, 0))) return false;
     }
     advance(*vdp, 59736 * 2);
     for (unsigned y = 0; y < 192; ++y) for (unsigned x = 0; x < 256; ++x) {
         if (!pixel(*vdp, x, y, scrolledPixel(x, y, 8, 8, 0))) return false;
+    }
+    for (const auto standard : {VideoStandard::Ntsc, VideoStandard::Pal}) {
+        const unsigned frame = (standard == VideoStandard::Ntsc ? 262u : 313u) * 228;
+        for (const unsigned phase : {210u, 211u, 212u}) {
+            auto original = std::make_unique<Vdp>(standard); scrollingScene(*original);
+            original->advanceTo(96 * 228);
+            original->writeControl(8, 96 * 228 + 200);
+            original->writeControl(0x88, 96 * 228 + phase);
+            original->advanceTo(96 * 228 + 212);
+            auto saved = std::make_unique<smsgg::VdpState>();
+            original->captureState(*saved);
+            auto restored = std::make_unique<Vdp>(standard);
+            restored->restoreState(*saved);
+            for (auto* system : {original.get(), restored.get()}) {
+                advance(*system, frame);
+                for (unsigned y = 96; y <= 98; ++y) {
+                    const unsigned h = (y == 98 || (y == 97 && phase == 210)) ? 8 : 0;
+                    for (unsigned x = 0; x < 256; ++x)
+                        if (!pixel(*system, x, y, scrolledPixel(x, y, h, 0, 0))) return false;
+                }
+            }
+        }
+        auto wrapped = std::make_unique<Vdp>(standard); scrollingScene(*wrapped);
+        wrapped->advanceTo(frame - 228);
+        wrapped->writeControl(8, frame - 18);
+        wrapped->writeControl(0x88, frame - 18); // Last write before the latch for row 0.
+        wrapped->writeControl(0, frame - 17);
+        wrapped->writeControl(0x88, frame - 17);
+        advance(*wrapped, frame * 2);
+        for (unsigned x = 0; x < 256; ++x) {
+            if (!pixel(*wrapped, x, 0, scrolledPixel(x, 0, 8, 0, 0)) ||
+                !pixel(*wrapped, x, 1, scrolledPixel(x, 1, 0, 0, 0))) return false;
+        }
     }
     return true;
 }
@@ -263,19 +296,47 @@ bool overflow() {
         for (unsigned i = 0; i < count; ++i) putSprite(*vdp, 0x3f00, i, 0,
             static_cast<uint8_t>(kind == 2 ? 0 : i * 8), static_cast<uint8_t>(kind == 1 ? 0 : 1));
         if (count < 64) { command(*vdp, static_cast<uint16_t>(0x3f00 + count), 1); vdp->writeData(0xd0); }
-        advance(*vdp, 455);
+        advance(*vdp, 227);
         if (vdp->readStatus() != 0x1f) return false;
-        advance(*vdp, 456);
+        advance(*vdp, 228);
         vdp->readData(); vdp->writeData(0);
         const uint8_t expected = count > 8 ? 0x5f : 0x1f;
         if (vdp->readStatus() != expected || vdp->readStatus() != 0x1f) {
             std::cerr << "overflow count=" << count << " kind=" << kind << '\n'; return false;
         }
+        advance(*vdp, 455);
+        if (vdp->readStatus() != 0x1f) return false;
+        advance(*vdp, 456);
+        if (vdp->readStatus() != expected) return false;
+        reg(*vdp, 1, 0);
         advance(*vdp, 684);
-        reg(*vdp, 1, 0); advance(*vdp, 20 * 228);
+        if (vdp->readStatus() != expected) return false;
+        advance(*vdp, 20 * 228);
         if (vdp->readStatus() != expected) return false; // Blank does not clear an existing flag.
         advance(*vdp, 21 * 228);
         if (vdp->readStatus() != 0x1f) return false;
+    }
+    for (const auto standard : {VideoStandard::Ntsc, VideoStandard::Pal}) {
+        auto vdp = std::make_unique<Vdp>(standard); setup(*vdp);
+        const uint64_t frame = (standard == VideoStandard::Ntsc ? 262u : 313u) * 228;
+        const auto setY = [&](uint8_t y) {
+            command(*vdp, 0x3f00, 1);
+            for (int i = 0; i < 9; ++i) vdp->writeData(y);
+            vdp->writeData(0xd0);
+        };
+        setY(190);
+        if ((vdp->readStatus(191 * 228 - 1) & 0x40) != 0 || (vdp->readStatus(191 * 228) & 0x40) == 0
+            || (vdp->readStatus(192 * 228) & 0x40) != 0) return false;
+        setY(0xff);
+        if ((vdp->readStatus(frame - 1) & 0x40) != 0) return false;
+        auto saved = std::make_unique<smsgg::VdpState>();
+        auto restored = std::make_unique<Vdp>(standard);
+        vdp->captureState(*saved);
+        restored->restoreState(*saved);
+        if ((vdp->readStatus(frame) & 0x40) == 0 || (restored->readStatus(frame) & 0x40) == 0) return false;
+        vdp->captureState(*saved);
+        restored->restoreState(*saved);
+        if ((restored->readStatus(frame + 1) & 0x40) != 0 || (restored->readStatus(frame + 228) & 0x40) == 0) return false;
     }
     return true;
 }

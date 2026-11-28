@@ -7,7 +7,7 @@ namespace smsgg {
 class VdpIo final : public Z80Io {
 public:
     VdpIo(Vdp& vdp, Z80Io& otherDevices);
-    uint8_t readPort(uint16_t port) override;
+    uint8_t readPort(uint16_t port, uint64_t tstate = 0) override;
     void writePort(uint16_t port, uint8_t value, uint64_t tstate = 0) override;
 private:
     Vdp& vdp_;

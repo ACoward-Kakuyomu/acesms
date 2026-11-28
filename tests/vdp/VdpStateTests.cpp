@@ -89,18 +89,36 @@ bool timing() {
         command(*original,0x3f00,1);for(unsigned i=0;i<9;++i) original->writeData(0);original->writeData(0xd0);
         original->advanceTo(period);original->readStatus();
         const uint64_t at=period+4*228+97;original->advanceTo(at);original->latchHCounter();
-        if(!original->interruptPending() || original->readVCounter()!=4 || original->readHCounter()!=72) return false;
+        const uint8_t hLatch=machine==Machine::Sms?73:72;
+        if(!original->interruptPending() || original->readVCounter()!=4 || original->readHCounter()!=hLatch) return false;
         auto saved=std::make_unique<VdpState>();original->captureState(*saved);
         if(saved->spriteStatus!=0x60 || saved->framePending || !saved->linePending || !original->interruptPending()) return false;
         restored->advanceTo(period*4+31);restored->readStatus();restored->restoreState(*saved);
         if(!equal(*original,*restored)) return false;
         for(const uint64_t delta:{0ull,1ull,130ull,131ull,228ull,456ull,193ull*228,period}) {
             original->advanceTo(at+delta);restored->advanceTo(at+delta);
-            if(original->readVCounter()!=restored->readVCounter() || restored->readHCounter()!=72
+            if(original->readVCounter()!=restored->readVCounter() || restored->readHCounter()!=hLatch
                 || original->interruptPending()!=restored->interruptPending() || !equal(*original,*restored)) return false;
             if(delta==193*228) {
                 const auto status=original->readStatus();if(!(status&0x80) || restored->readStatus()!=status) return false;
             }
+        }
+        if (machine == Machine::Sms) {
+            reg(*original, 10, 0);
+            const auto edge = period * 3 - 15; // IRQ for the next frame's first line.
+            original->advanceTo(edge - 1);
+            original->readStatus();
+            original->captureState(*saved);
+            restored->restoreState(*saved);
+            original->advanceTo(edge);
+            restored->advanceTo(edge);
+            if (!restored->interruptPending() || !equal(*original, *restored)) return false;
+            original->readStatus();
+            original->captureState(*saved);
+            restored->restoreState(*saved);
+            original->advanceTo(period * 3);
+            restored->advanceTo(period * 3);
+            if (restored->interruptPending() || !equal(*original, *restored)) return false;
         }
     }
     return true;

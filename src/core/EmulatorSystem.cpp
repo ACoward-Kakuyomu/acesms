@@ -5,9 +5,9 @@
 
 namespace smsgg {
 EmulatorSystem::EmulatorSystem(RomImage image, VideoStandard standard, uint32_t sampleRate, Machine machine, bool fmEnabled,FmInterpolation interpolation,FmBackendPtr backend)
-    : machine_(machine), cartridge_(std::move(image)), memory_(cartridge_,machine), vdp_(standard,machine),
+    : machine_(machine), cartridge_(std::move(image)), memory_(cartridge_,machine), vdp_(standard,machine,Vdp::Startup::Cartridge),
       audio_(cpuClockHz(standard),sampleRate,fmEnabled && machine==Machine::Sms && standard==VideoStandard::Ntsc,interpolation,std::move(backend),machine),
-      smsIo_(controller_,audio_,machine,audio_.hasFm()), vdpIo_(vdp_, smsIo_), memoryControl_(memory_, vdpIo_,machine), io_(memoryControl_,machine,audio_.hasFm()),
+      smsIo_(controller_,audio_,vdp_,machine,audio_.hasFm()), vdpIo_(vdp_, smsIo_), memoryControl_(memory_, vdpIo_,machine), io_(memoryControl_,machine,audio_.hasFm()),
       cpu_({.sp = 0xdff8}),
       audioBuffer_((maximumStepTstates*sampleRate+cpuClockHz(standard)-1)/cpuClockHz(standard)+1) {}
 

@@ -37,7 +37,16 @@ bool state(const std::filesystem::path& dir,const FmBackendPtr& backend) {
     if(actual.size()!=expected.size()) return false;
     if(std::none_of(expected.begin(),expected.end(),[](AudioFrame frame){return frame.left!=0 || frame.right!=0;})) return false;
     for(size_t n=0;n<actual.size();++n) if(actual[n].left!=expected[n].left || actual[n].right!=expected[n].right) return false;
-    return session.system().tstates()==future;
+    if(session.system().tstates()!=future) return false;
+    auto saved=std::make_unique<EmulatorSystemState>();
+    session.system().captureState(*saved);
+    saved->vdp.scrollX=8;saved->vdp.nextScrollX=16;
+    if(writeFileAtomically(dir/L"scroll.state",encodeState(session.profile(),*saved))) return false;
+    auto scroll=session.prepareState(dir/L"scroll.state");
+    auto* restored=std::get_if<std::unique_ptr<EmulatorSystem>>(&scroll);
+    if(!restored) return false;
+    (*restored)->captureState(*saved);
+    return saved->vdp.scrollX==8 && saved->vdp.nextScrollX==16;
 }
 bool failure(const std::filesystem::path& dir,const FmBackendPtr& backend) {
     EmulationSession session(image(),dir/L"failed.sms",VideoStandard::Ntsc,48000,Machine::Sms,true,FmInterpolation::Linear,backend);

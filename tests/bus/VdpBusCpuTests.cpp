@@ -1,6 +1,7 @@
 #include "core/bus/VdpIo.h"
 #include "core/bus/IoBus.h"
 #include "core/bus/MemoryControl.h"
+#include "core/bus/SmsIo.h"
 #include "core/cartridge/Cartridge.h"
 #include "core/cartridge/RomLoader.h"
 #include "core/state/StateCodec.h"
@@ -63,7 +64,7 @@ bool ports() {
         const unsigned low = port % 256;
         vdp->readStatus(); devices.reply = value; devices.accesses.clear();
         command(*vdp, 0x1234, 1); vdp->writeData(static_cast<uint8_t>(value ^ 0xa5));
-        const uint8_t expected = low < 64 || low >= 192 ? value : low < 128 ? (low % 2 ? 0xe9 : 7)
+        const uint8_t expected = low < 64 || low >= 192 ? value : low < 128 ? (low % 2 ? 0xea : 7)
             : low % 2 ? 0x1f : static_cast<uint8_t>(value ^ 0xa5);
         if (io.readPort(address) != expected) return false;
         const bool delegated = low < 64 || low >= 192;
@@ -104,6 +105,42 @@ bool memoryControl() {
     }
     return true;
 }
+bool thLatch() {
+    using namespace smsgg;
+    auto vdp = std::make_unique<Vdp>(VideoStandard::Ntsc);
+    test::Memory cartridge;
+    MemoryBus memory(cartridge);
+    Controller controller;
+    AudioMixer audio(3579545, 48000);
+    SmsIo terminal(controller, audio, *vdp);
+    VdpIo video(*vdp, terminal);
+    MemoryControl control(memory, video);
+    IoBus io(control);
+
+    io.writePort(0x3f, 0x0d, 12); // A TH output low.
+    if (io.readPort(0x7f) != 0) return false;
+    io.writePort(0x1201, 0x2d, 24); // A rises via a mirrored control port.
+    if (io.readPort(0x7f) != 0x12 || io.readPort(0x9941) != 0x12) return false;
+    io.writePort(0x3f, 0x2d, 36); // Same level.
+    io.writePort(0x3f, 0x07, 48); // A stays high; B falls.
+    if (io.readPort(0x7f) != 0x12) return false;
+    io.writePort(0x3e, 4, 52);
+    io.writePort(0x3f, 0x87, 56); // B write blocked by memory control.
+    if (io.readPort(0x7f) != 0x12) return false;
+    io.writePort(0x3e, 0, 60);
+    if ((io.readPort(0xdd) & 0x80) != 0) return false;
+    io.writePort(0x3f, 0x0f, 64); // B rises via direction change to input.
+    if (io.readPort(0x7f) != 0x30) return false;
+
+    io.writePort(0x3f, 0x25, 80); // Both TH outputs; A high, B low.
+    memory.write8(0xc000, 0x85); // OTIR makes B rise and A fall.
+    Z80 cpu({.bc = 0x023f, .hl = 0xc000});
+    vdp->advanceTo(100);
+    constexpr uint8_t otir[]{0xed, 0xb3};
+    if (cpu.executeInstruction(otir, &memory, &io, 100) != 21) return false;
+    vdp->advanceTo(121);
+    return io.readPort(0x7f) == 0x57 && io.readPort(0x7d) == 0x57;
+}
 bool cpuPorts() {
     for (const uint8_t port : {0x80,0xbe}) for (const uint8_t value : {0,0x55,0xaa,0xff}) {
         auto rig = std::make_unique<Rig>();
@@ -121,6 +158,24 @@ bool cpuPorts() {
         if (rig->cycle != 130 || rig->vdp.readVCounter() != 0 || !rig->trace.accesses.empty() || !rig->devices.accesses.empty()) return false;
     }
     return true;
+}
+bool vCounterReadTiming() {
+    for (const unsigned phase : {211u, 212u, 213u}) {
+        auto rig = std::make_unique<Rig>();
+        rig->cycle = 218 * 228 + phase - 11;
+        rig->vdp.advanceTo(rig->cycle);
+        smsgg::Z80 cpu(initialRegisters());
+        if (rig->execute(cpu, {0xdb, 0x40}) != 11
+            || cpu.registers().a() != (phase == 211 ? 0xda : 0xd5)) return false;
+    }
+    // INIR finishes after the boundary, but should store the value at the earlier I/O cycle.
+    auto rig = std::make_unique<Rig>();
+    rig->cycle = 198;
+    rig->vdp.advanceTo(rig->cycle);
+    smsgg::Z80 cpu({.bc = 0x027e, .hl = 0xc000});
+    return rig->execute(cpu, {0xed, 0xb2}) == 21 && rig->memory.read8(0xc000) == 0
+        && rig->vdp.readVCounter() == 1
+        && rig->execute(cpu, {0xed, 0xb2}) == 16 && rig->memory.read8(0xc001) == 1;
 }
 bool cpuBlock() {
     for (const bool output : {false,true}) {
@@ -219,7 +274,7 @@ bool cpuIrq(bool lineSource = false) {
     const uint8_t sourceStatus = lineSource ? 0x1f : 0x9f;
     smsgg::test::reg(rig->vdp, sourceRegister, sourceEnable);
     if (lineSource) smsgg::test::reg(rig->vdp, 10, 0);
-    const uint64_t origin = lineSource ? 59736 + 227 : 44003;
+    const uint64_t origin = lineSource ? 59736 - 16 : 43987;
     rig->cycle = origin; rig->vdp.advanceTo(rig->cycle); rig->vdp.readStatus();
     if (rig->execute(cpu, {0}) != 4 || !rig->vdp.interruptPending()) return false;
     expected.pc = 0x4003; expected.r = 0x38;
@@ -244,7 +299,7 @@ bool cpuIrq(bool lineSource = false) {
     if (!sameRegisters(cpu.registers(), expected) || !cpu.canAcceptMaskableInterrupt() || rig->cycle != origin + 54) return false;
     if (rig->interrupt(cpu) != 0 || !sameRegisters(cpu.registers(), expected)) return false;
     // Leave the next source unacknowledged across EI/RETI: the same level must be accepted again.
-    const uint64_t secondEdge = lineSource ? 59736 * 2 + 228 : 59736 + 44004;
+    const uint64_t secondEdge = lineSource ? 59736 * 2 - 15 : 59736 + 43988;
     rig->cycle = secondEdge - 1; rig->vdp.advanceTo(rig->cycle); rig->vdp.readStatus();
     rig->cycle = secondEdge; rig->vdp.advanceTo(rig->cycle);
     if (rig->interrupt(cpu) != 13 || rig->execute(cpu, {0xfb}) != 4 || rig->execute(cpu, {0xed,0x4d}) != 14) return false;
@@ -264,19 +319,58 @@ bool cpuIrq(bool lineSource = false) {
     return !rig->vdp.interruptPending() && rig->devices.accesses.empty()
         && rig->cycle == secondEdge + 13 + 4 + 14 + 13 + 4 + 14 + 4;
 }
+bool frameStatusTiming() {
+    using namespace smsgg;
+    constexpr uint64_t request = 192 * 228 + 212;
+    for (const uint64_t sample : {request, request + 1}) {
+        auto rig = std::make_unique<Rig>();
+        test::reg(rig->vdp, 1, 0x20);
+        rig->cycle = sample - 11;
+        rig->vdp.advanceTo(rig->cycle);
+        Z80 cpu(initialRegisters());
+        if (rig->execute(cpu, {0xdb, 0x81}) != 11
+            || cpu.registers().a() != (sample == request ? 0x1f : 0x9f)
+            || rig->vdp.interruptPending()) return false;
+        rig->vdp.advanceTo(request + 1);
+        if (rig->vdp.interruptPending() || rig->vdp.readStatus() != (sample == request ? 0x9f : 0x1f)) return false;
+    }
+    std::vector<uint8_t> bytes(8192);
+    constexpr uint8_t enable[]{
+        0x3e, 0x00, 0xd3, 0xbf, 0x3e, 0x80, 0xd3, 0xbf, // Disable Mode 4 sprite evaluation for this VINT test.
+        0x3e, 0x20, 0xd3, 0xbf, 0x3e, 0x81, 0xd3, 0xbf,
+    };
+    std::copy(std::begin(enable), std::end(enable), bytes.begin());
+    const auto rom = std::get<RomImage>(RomLoader::fromBytes(std::move(bytes), {MapperKind::RomOnly}));
+    const StateProfile profile{8192, rom.metadata().crc32, Machine::Sms, VideoStandard::Ntsc, MapperKind::RomOnly, 0, 48000};
+    auto system = std::make_unique<EmulatorSystem>(rom, VideoStandard::Ntsc, 48000);
+    while (system->tstates() < request) system->step();
+    auto snapshot = std::make_unique<EmulatorSystemState>();
+    system->captureState(*snapshot);
+    auto saved = decodeState(encodeState(profile, *snapshot), profile);
+    const auto* restored = std::get_if<std::unique_ptr<EmulatorSystemState>>(&saved);
+    if (!restored) return false;
+    auto vdp = std::make_unique<Vdp>(VideoStandard::Ntsc);
+    vdp->restoreState((*restored)->vdp);
+    if (!vdp->interruptPending() || vdp->readStatus() != 0x1f || vdp->interruptPending()) return false;
+    vdp->advanceTo(request + 1);
+    return !vdp->interruptPending() && vdp->readStatus() == 0x9f;
+}
 } // namespace
 int main(int argc, char* argv[]) {
     if (argc == 2) {
         const std::string_view name(argv[1]);
         if (name == "ports") return ports() ? 0 : 1;
         if (name == "memory_control") return memoryControl() ? 0 : 1;
+        if (name == "th_latch") return thLatch() ? 0 : 1;
         if (name == "cpu_ports") return cpuPorts() ? 0 : 1;
+        if (name == "v_counter_read_timing") return vCounterReadTiming() ? 0 : 1;
         if (name == "cpu_block") return cpuBlock() ? 0 : 1;
         if (name == "cram_timing") return cramTiming(smsgg::VideoStandard::Ntsc)
             && cramTiming(smsgg::VideoStandard::Pal) ? 0 : 1;
         if (name == "cram_restore") return cramRestore() ? 0 : 1;
         if (name == "cpu_irq") return cpuIrq() ? 0 : 1;
         if (name == "cpu_line_irq") return cpuIrq(true) ? 0 : 1;
+        if (name == "frame_status_timing") return frameStatusTiming() ? 0 : 1;
     }
     std::cerr << "Failed VDP bus CPU test\n"; return 1;
 }

@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { crc32 } = require('node:zlib');
 const { DatabaseSync } = require('node:sqlite');
 
 const [name, phase, dbPath, baselinePath, romPath, jsonPath] = process.argv.slice(2);
@@ -20,7 +21,7 @@ const one = (db, query) => Object.values(db.prepare(query).get());
 const rows = (db, query) => db.prepare(query).all().map(Object.values);
 
 assert.deepEqual(one(baseline, 'PRAGMA user_version'), [1]);
-assert.deepEqual(one(db, 'PRAGMA user_version'), [2]);
+assert.deepEqual(one(db, 'PRAGMA user_version'), [3]);
 assert.deepEqual(one(db, 'PRAGMA quick_check'), ['ok']);
 assert.deepEqual(rows(db, 'PRAGMA foreign_key_check'), []);
 assert.deepEqual(rows(db, 'SELECT lower(hex(sha256)), rom_bytes FROM roms'), [[romHash, 8192]]);
@@ -28,12 +29,13 @@ assert.deepEqual(rows(db,
   'SELECT machine, video, mapper, ram_bytes, fm_enabled, fm_plugin, interpolation FROM rom_settings'),
   [[machineId, 0, mapper, ramBytes, Number(!!fmCase), plugin, method]]);
 
-function slot(database, number) {
+function slot(database, number, version = 2) {
   const row = database.prepare('SELECT * FROM states WHERE slot=?').get(number);
   assert.ok(row, `Missing slot ${number}`);
   const data = Buffer.from(row.data);
   assert.equal(data.subarray(0, 8).toString('ascii'), 'ACESMSST');
-  assert.equal(data.readUInt16LE(8), 1);
+  assert.equal(data.readUInt16LE(8), version);
+  assert.equal(data.readUInt32LE(10), data.length - 42);
   assert.deepEqual([...data.subarray(26, 30)], [machineId, 0, mapper, Number(!!fmCase)]);
   assert.equal(data.readUInt32LE(30), ramBytes);
   return { ...row, data, ticks: data.readBigUInt64LE(42) };
@@ -47,7 +49,8 @@ function confirmFm({ data, ticks }) {
   const rate = data.readUInt32LE(34);
   const length = data.readUInt32LE(38);
   assert.ok(rate > 0 && length > 67);
-  const fm = data.subarray(data.length - length);
+  const end = data.length - (data.readUInt16LE(8) === 2 ? 2 : 0);
+  const fm = data.subarray(end - length, end);
   assert.equal(fm.subarray(0, 16).toString('hex'), backendId);
   assert.equal(fm.readUInt32LE(16), 1);
   assert.equal(fm.subarray(20, 36).toString('hex'), compatibilityId);
@@ -83,16 +86,23 @@ function confirmCheats(enabled) {
 }
 
 if (phase === 'reuse') {
-  const original = slot(baseline, 5);
+  const original = slot(baseline, 5, 1);
   assert.ok(original.ticks > 0n);
-  assert.deepEqual(slot(db, 5), original);
-  assert.deepEqual(slot(db, 7).data, original.data, 'immediate resave');
+  assert.deepEqual(slot(db, 5, 1), original);
+  // R8 lies after CPU, memory, cartridge, controller, VRAM and the VDP latches.
+  const r8 = machineId === 0 ? original.data[24705 + ramBytes + (mapper ? 4 : 0)] : 0;
+  const upgraded = Buffer.concat([original.data, Buffer.from([r8, r8])]);
+  upgraded.writeUInt16LE(2, 8);
+  upgraded.writeUInt32LE(upgraded.length - 42, 10);
+  upgraded.writeUInt32LE(0, 14);
+  upgraded.writeUInt32LE(crc32(upgraded), 14);
+  assert.deepEqual(slot(db, 7).data, upgraded, 'immediate resave as format 2');
   if (fmCase) {
     const continued = slot(db, 8);
     assert.ok(continued.ticks > original.ticks);
     const rate = confirmFm(original);
     assert.equal(confirmFm(continued), rate);
-    console.log(`${name}: slot 5 and slot 7 match, FM resumed at ${continued.ticks} T-state (${rate} Hz)`);
+    console.log(`${name}: slot 5 retained, slot 7 resaved as version 2, FM resumed at ${continued.ticks} T-state (${rate} Hz)`);
   } else {
     assert.deepEqual(one(db, 'SELECT aspect, machine, ram FROM app_settings'), [1, -1, 16384]);
     confirmCheats(1);
@@ -109,7 +119,7 @@ if (phase === 'reuse') {
       assert.deepEqual(original.data.subarray(start, start + ramBytes), sram);
       assert.deepEqual(boot.data.subarray(start, start + ramBytes), sram);
     }
-    console.log(`${name}: settings, enabled cheat, slot 5 and slot 7 match, SRAM bytes=${ramBytes}`);
+    console.log(`${name}: settings, enabled cheat, slot 5 retained, slot 7 resaved as version 2, SRAM bytes=${ramBytes}`);
   }
 } else {
   assert.ok(!fmCase && ['before-save', 'imported'].includes(phase));

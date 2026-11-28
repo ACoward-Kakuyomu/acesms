@@ -6,15 +6,17 @@
 #include <memory>
 
 namespace smsgg::win32 {
-std::variant<std::vector<uint8_t>,FileError> readFileExact(const std::filesystem::path& path,size_t expectedBytes,const FileIo& io) {
+std::variant<std::vector<uint8_t>,FileError> readFileExact(const std::filesystem::path& path,size_t expectedBytes,
+    const FileIo& io,std::optional<size_t> alternateBytes) {
     const auto raw=CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
     if(raw==INVALID_HANDLE_VALUE) return FileError{FileOperation::Open,GetLastError()};
     std::unique_ptr<void,decltype(&::CloseHandle)> handle(raw,::CloseHandle);
     LARGE_INTEGER size{};
     if(!GetFileSizeEx(raw,&size)) return FileError{FileOperation::Size,GetLastError()};
-    if(size.QuadPart<0 || static_cast<uint64_t>(size.QuadPart)!=expectedBytes)
+    const auto bytesOnDisk=static_cast<uint64_t>(size.QuadPart);
+    if(size.QuadPart<0 || (bytesOnDisk!=expectedBytes && bytesOnDisk!=alternateBytes))
         return FileError{FileOperation::Size,ERROR_BAD_LENGTH};
-    std::vector<uint8_t> bytes(expectedBytes);size_t at=0;
+    std::vector<uint8_t> bytes(static_cast<size_t>(bytesOnDisk));size_t at=0;
     while(at<bytes.size()) {
         const auto count=static_cast<DWORD>(std::min<size_t>(bytes.size()-at,MAXDWORD));DWORD done=0;
         if(!io.read(raw,bytes.data()+at,count,&done,nullptr)) return FileError{FileOperation::Read,GetLastError()};

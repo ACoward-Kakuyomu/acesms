@@ -9,7 +9,7 @@ namespace smsgg {
 class IoBus final : public Z80Io {
 public:
     explicit IoBus(Z80Io& devices, Machine machine = Machine::Sms, bool fmEnabled = false);
-    uint8_t readPort(uint16_t port) override;
+    uint8_t readPort(uint16_t port, uint64_t tstate = 0) override;
     void writePort(uint16_t port, uint8_t value, uint64_t tstate = 0) override;
 private:
     Z80Io& devices_;
